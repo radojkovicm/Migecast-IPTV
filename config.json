@@ -1,0 +1,26 @@
+{
+    "playlists": {
+        "auto_refresh": true,
+        "refresh_interval_days": 7
+    },
+    "display": {
+        "max_channels": "50",
+        "max_vod": "50",
+        "hidden_categories": []
+    },
+    "player": {
+        "timeshift_buffer": "5 GB",
+        "reconnect_attempts": 3,
+        "hw_acceleration": true,
+        "default_volume": 70
+    },
+    "parental": {
+        "enabled": false,
+        "pin_code": "",
+        "protected_categories": []
+    },
+    "ui": {
+        "theme": "light",
+        "font_size": "medium"
+    }
+}
