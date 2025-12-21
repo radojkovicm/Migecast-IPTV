@@ -64,6 +64,65 @@ class SavedPlaylist(Base):
     is_active = Column(Boolean, default=False)
     added_at = Column(DateTime, default=datetime.now)
     last_loaded = Column(DateTime)
+    last_refreshed = Column(DateTime)  # NOVO - kada je zadnji put osveženo
+
+
+# ============================================================
+# NOVE TABELE ZA KESIRANJE PLAYLISTE
+# ============================================================
+
+class CachedChannel(Base):
+    """Cached channels from playlist"""
+    __tablename__ = 'cached_channels'
+    
+    id = Column(Integer, primary_key=True)
+    channel_id = Column(String, nullable=False)
+    name = Column(String)
+    url = Column(String)
+    logo = Column(String)
+    category = Column(String)
+    playlist_id = Column(Integer, nullable=False)  # Link to SavedPlaylist
+
+
+class CachedVOD(Base):
+    """Cached VOD items from playlist"""
+    __tablename__ = 'cached_vod'
+    
+    id = Column(Integer, primary_key=True)
+    stream_id = Column(String, nullable=False)
+    name = Column(String)
+    url = Column(String)
+    cover = Column(String)
+    plot = Column(Text)
+    rating = Column(String)
+    year = Column(String)
+    genre = Column(String)
+    duration = Column(String)
+    director = Column(String)
+    cast = Column(Text)
+    category = Column(String)
+    playlist_id = Column(Integer, nullable=False)
+
+
+class CachedSeries(Base):
+    """Cached Series from playlist"""
+    __tablename__ = 'cached_series'
+    
+    id = Column(Integer, primary_key=True)
+    stream_id = Column(String, nullable=False)
+    name = Column(String)
+    url = Column(String)
+    cover = Column(String)
+    plot = Column(Text)
+    rating = Column(String)
+    year = Column(String)
+    genre = Column(String)
+    director = Column(String)
+    cast = Column(Text)
+    category = Column(String)
+    season = Column(String)
+    episode = Column(String)
+    playlist_id = Column(Integer, nullable=False)
 
 
 class TMDBCache(Base):
@@ -71,19 +130,19 @@ class TMDBCache(Base):
     __tablename__ = 'tmdb_cache'
     
     id = Column(Integer, primary_key=True)
-    stream_id = Column(String, unique=True, nullable=False)  # VOD stream_id
+    stream_id = Column(String, unique=True, nullable=False)
     title = Column(String)
     tmdb_id = Column(Integer)
-    rating = Column(Float)  # TMDB rating (0-10)
+    rating = Column(Float)
     vote_count = Column(Integer)
-    overview = Column(Text)  # Description
-    genres = Column(String)  # Comma-separated genres
+    overview = Column(Text)
+    genres = Column(String)
     release_date = Column(String)
-    runtime = Column(Integer)  # Duration in minutes
+    runtime = Column(Integer)
     director = Column(String)
-    cast = Column(Text)  # Comma-separated cast (top 5)
-    poster_path = Column(String)  # TMDB poster URL
-    backdrop_path = Column(String)  # TMDB backdrop URL
+    cast = Column(Text)
+    poster_path = Column(String)
+    backdrop_path = Column(String)
     cached_at = Column(DateTime, default=datetime.now)
     
     def to_dict(self):
@@ -210,12 +269,7 @@ class Database:
         return self.session.query(FavoriteVOD).filter_by(stream_id=stream_id).first() is not None
     
     def get_all_vod_favorite_ids(self) -> set:
-        """
-        Batch fetch all favorite VOD IDs.
-        This is MUCH faster than calling is_vod_favorite() in a loop.
-        
-        Performance: 1 DB query instead of N queries for N items.
-        """
+        """Batch fetch all favorite VOD IDs"""
         try:
             favorites = self.session.query(FavoriteVOD.stream_id).all()
             return {fav[0] for fav in favorites}
@@ -224,10 +278,7 @@ class Database:
             return set()
     
     def toggle_vod_favorite(self, stream_id: str, name: str = "") -> bool:
-        """
-        Toggle VOD favorite status.
-        Returns True if added, False if removed.
-        """
+        """Toggle VOD favorite status"""
         if self.is_vod_favorite(stream_id):
             self.remove_vod_favorite(stream_id)
             return False
@@ -271,6 +322,15 @@ class Database:
         """Check if series is favorite"""
         return self.session.query(FavoriteSeries).filter_by(series_id=series_id).first() is not None
     
+    def get_series_favorites(self) -> list:
+        """Get all favorite series with their data"""
+        try:
+            favorites = self.session.query(FavoriteSeries).all()
+            return [(fav.series_id, fav.name) for fav in favorites]
+        except Exception as e:
+            logger.error(f"Failed to fetch favorite series: {e}")
+            return []
+    
     def get_all_series_favorite_ids(self) -> set:
         """Batch fetch all favorite series IDs"""
         try:
@@ -279,6 +339,18 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to fetch favorite series IDs: {e}")
             return set()
+        
+    def mark_series_watched(self, stream_id: str, name: str):
+        """Mark series episode as watched"""
+        try:
+            self.cursor.execute("""
+                INSERT OR REPLACE INTO series_history (stream_id, name, watched_date)
+                VALUES (?, ?, datetime('now'))
+            """, (stream_id, name))
+            self.conn.commit()
+            logger.info(f"Marked series as watched: {name}")
+        except Exception as e:
+            logger.error(f"Failed to mark series as watched: {e}")
     
     # ============================================================
     # WATCHED VOD (OPTIMIZED WITH BATCH)
@@ -350,6 +422,7 @@ class Database:
                 existing.name = name
                 existing.is_active = True
                 existing.last_loaded = datetime.now()
+                playlist_id = existing.id
             else:
                 # Create new
                 playlist = SavedPlaylist(
@@ -363,24 +436,30 @@ class Database:
                     last_loaded=datetime.now()
                 )
                 self.session.add(playlist)
+                self.session.flush()  # Get ID
+                playlist_id = playlist.id
             
             self.session.commit()
-            logger.info(f"Saved playlist: {name}")
+            logger.info(f"Saved playlist: {name} (ID: {playlist_id})")
+            return playlist_id
         except Exception as e:
             self.session.rollback()
             logger.error(f"Failed to save playlist: {e}")
+            return None
     
     def get_last_playlist(self):
         """Get last active playlist"""
         playlist = self.session.query(SavedPlaylist).filter_by(is_active=True).first()
         if playlist:
             return {
+                'id': playlist.id,
                 'name': playlist.name,
                 'type': playlist.type,
                 'url': playlist.url,
                 'server': playlist.server,
                 'username': playlist.username,
-                'password': playlist.password
+                'password': playlist.password,
+                'last_refreshed': playlist.last_refreshed
             }
         return None
     
@@ -389,8 +468,12 @@ class Database:
         return self.session.query(SavedPlaylist).all()
     
     def delete_playlist(self, playlist_id: int):
-        """Delete playlist"""
+        """Delete playlist and its cached data"""
         try:
+            # Delete cached data first
+            self.clear_cached_playlist(playlist_id)
+            
+            # Delete playlist
             playlist = self.session.query(SavedPlaylist).filter_by(id=playlist_id).first()
             if playlist:
                 self.session.delete(playlist)
@@ -399,6 +482,166 @@ class Database:
         except Exception as e:
             self.session.rollback()
             logger.error(f"Failed to delete playlist: {e}")
+    
+    def update_playlist_refresh_time(self, playlist_id: int):
+        """Update last_refreshed timestamp"""
+        try:
+            playlist = self.session.query(SavedPlaylist).filter_by(id=playlist_id).first()
+            if playlist:
+                playlist.last_refreshed = datetime.now()
+                self.session.commit()
+                logger.info(f"Updated refresh time for playlist: {playlist_id}")
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to update refresh time: {e}")
+    
+    # ============================================================
+    # PLAYLIST CACHE (NOVO!)
+    # ============================================================
+    
+    def cache_channels(self, channels: list, playlist_id: int):
+        """Cache channels to database"""
+        try:
+            # Clear existing cached channels for this playlist
+            self.session.query(CachedChannel).filter_by(playlist_id=playlist_id).delete()
+            
+            # Add new channels
+            for ch in channels:
+                cached = CachedChannel(
+                    channel_id=ch.channel_id,
+                    name=ch.name,
+                    url=ch.url,
+                    logo=ch.logo,
+                    category=ch.category,
+                    playlist_id=playlist_id
+                )
+                self.session.add(cached)
+            
+            self.session.commit()
+            logger.info(f"Cached {len(channels)} channels for playlist {playlist_id}")
+            return True
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to cache channels: {e}")
+            return False
+    
+    def cache_vod_items(self, vod_items: list, playlist_id: int):
+        """Cache VOD items to database"""
+        try:
+            # Clear existing
+            self.session.query(CachedVOD).filter_by(playlist_id=playlist_id).delete()
+            
+            # Add new
+            for item in vod_items:
+                cached = CachedVOD(
+                    stream_id=item.stream_id,
+                    name=item.name,
+                    url=item.url,
+                    cover=item.cover,
+                    plot=getattr(item, 'plot', ''),
+                    rating=getattr(item, 'rating', ''),
+                    year=getattr(item, 'year', ''),
+                    genre=getattr(item, 'genre', ''),
+                    duration=getattr(item, 'duration', ''),
+                    director=getattr(item, 'director', ''),
+                    cast=getattr(item, 'cast', ''),
+                    category=item.category,
+                    playlist_id=playlist_id
+                )
+                self.session.add(cached)
+            
+            self.session.commit()
+            logger.info(f"Cached {len(vod_items)} VOD items for playlist {playlist_id}")
+            return True
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to cache VOD items: {e}")
+            return False
+    
+    def cache_series_items(self, series_items: list, playlist_id: int):
+        """Cache Series items to database"""
+        try:
+            # Clear existing
+            self.session.query(CachedSeries).filter_by(playlist_id=playlist_id).delete()
+            
+            # Add new
+            for item in series_items:
+                cached = CachedSeries(
+                    stream_id=item.stream_id,
+                    name=item.name,
+                    url=item.url,
+                    cover=item.cover,
+                    plot=getattr(item, 'plot', ''),
+                    rating=getattr(item, 'rating', ''),
+                    year=getattr(item, 'year', ''),
+                    genre=getattr(item, 'genre', ''),
+                    director=getattr(item, 'director', ''),
+                    cast=getattr(item, 'cast', ''),
+                    category=item.category,
+                    season=getattr(item, 'season', ''),
+                    episode=getattr(item, 'episode', ''),
+                    playlist_id=playlist_id
+                )
+                self.session.add(cached)
+            
+            self.session.commit()
+            logger.info(f"Cached {len(series_items)} series items for playlist {playlist_id}")
+            return True
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to cache series items: {e}")
+            return False
+    
+    def get_cached_channels(self, playlist_id: int) -> list:
+        """Get cached channels from database"""
+        try:
+            cached = self.session.query(CachedChannel).filter_by(playlist_id=playlist_id).all()
+            logger.info(f"Loaded {len(cached)} cached channels")
+            return cached
+        except Exception as e:
+            logger.error(f"Failed to get cached channels: {e}")
+            return []
+    
+    def get_cached_vod_items(self, playlist_id: int) -> list:
+        """Get cached VOD items from database"""
+        try:
+            cached = self.session.query(CachedVOD).filter_by(playlist_id=playlist_id).all()
+            logger.info(f"Loaded {len(cached)} cached VOD items")
+            return cached
+        except Exception as e:
+            logger.error(f"Failed to get cached VOD items: {e}")
+            return []
+    
+    def get_cached_series_items(self, playlist_id: int) -> list:
+        """Get cached series items from database"""
+        try:
+            cached = self.session.query(CachedSeries).filter_by(playlist_id=playlist_id).all()
+            logger.info(f"Loaded {len(cached)} cached series items")
+            return cached
+        except Exception as e:
+            logger.error(f"Failed to get cached series items: {e}")
+            return []
+    
+    def has_cached_playlist(self, playlist_id: int) -> bool:
+        """Check if playlist has cached data"""
+        try:
+            channel_count = self.session.query(CachedChannel).filter_by(playlist_id=playlist_id).count()
+            return channel_count > 0
+        except Exception as e:
+            logger.error(f"Failed to check cached playlist: {e}")
+            return False
+    
+    def clear_cached_playlist(self, playlist_id: int):
+        """Clear all cached data for playlist"""
+        try:
+            self.session.query(CachedChannel).filter_by(playlist_id=playlist_id).delete()
+            self.session.query(CachedVOD).filter_by(playlist_id=playlist_id).delete()
+            self.session.query(CachedSeries).filter_by(playlist_id=playlist_id).delete()
+            self.session.commit()
+            logger.info(f"Cleared cached data for playlist {playlist_id}")
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to clear cached playlist: {e}")
     
     # ============================================================
     # TMDB CACHE
@@ -416,16 +659,13 @@ class Database:
     def save_tmdb_cache(self, stream_id: str, tmdb_data: dict):
         """Save TMDB data to cache"""
         try:
-            # Check if exists
             cache = self.session.query(TMDBCache).filter_by(stream_id=stream_id).first()
             
             if cache:
-                # Update existing
                 for key, value in tmdb_data.items():
                     setattr(cache, key, value)
                 cache.cached_at = datetime.now()
             else:
-                # Create new
                 cache = TMDBCache(stream_id=stream_id, **tmdb_data)
                 self.session.add(cache)
             
@@ -438,21 +678,16 @@ class Database:
             return False
     
     def get_all_tmdb_ratings(self) -> dict:
-        """Batch fetch all TMDB ratings for quick display"""
+        """Batch fetch all TMDB ratings"""
         try:
             ratings = self.session.query(TMDBCache.stream_id, TMDBCache.rating, TMDBCache.vote_count).all()
             return {r[0]: {'rating': r[1], 'vote_count': r[2]} for r in ratings}
         except Exception as e:
             logger.error(f"Failed to fetch TMDB ratings: {e}")
             return {}
-    # ============================================================
-    # TMDB CACHE
-    # ============================================================
     
-    # ... (postojeće metode) ...
-
     def get_all_tmdb_cache(self) -> dict:
-        """Batch fetch all TMDB cached data for quick lookup"""
+        """Batch fetch all TMDB cached data"""
         try:
             all_cache = self.session.query(TMDBCache).all()
             return {cache.stream_id: cache.to_dict() for cache in all_cache}

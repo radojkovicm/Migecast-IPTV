@@ -5,25 +5,100 @@ from typing import List, Tuple
 from models.channel import Channel
 from models.vod_item import VODItem
 from models.series_item import SeriesItem
-from core.tmdb_service import TMDBService
+from core.database import Database
 
 logger = logging.getLogger(__name__)
 
 
 class PlaylistParser:
-    """Parser for M3U and Xtream Codes playlists"""
+    """Parser for M3U and Xtream Codes playlists with database caching"""
     
     @staticmethod
-    def parse_m3u_file(file_path: str) -> Tuple[List[Channel], List[VODItem], List[SeriesItem]]:
+    def parse_m3u_file(file_path: str, force_refresh: bool = False) -> Tuple[List[Channel], List[VODItem], List[SeriesItem]]:
         """
-        Parse M3U file and extract channels, movies, and series
+        Parse M3U file and extract channels, movies, and series.
+        Uses database cache if available and not forcing refresh.
         
         Args:
             file_path: Path to M3U file
+            force_refresh: If True, ignore cache and re-parse
             
         Returns:
             Tuple of (channels, vod_items, series_items)
         """
+        db = Database()
+        
+        # Check if we have cached data (unless forcing refresh)
+        if not force_refresh:
+            # Get active playlist
+            saved_playlist = db.get_last_playlist()
+            if saved_playlist and saved_playlist.get('url') == file_path:
+                playlist_id = saved_playlist.get('id')
+                
+                # Check if cache exists
+                if db.has_cached_playlist(playlist_id):
+                    logger.info(f"Loading playlist from cache (playlist_id: {playlist_id})")
+                    
+                    # Load from cache
+                    cached_channels = db.get_cached_channels(playlist_id)
+                    cached_vod = db.get_cached_vod_items(playlist_id)
+                    cached_series = db.get_cached_series_items(playlist_id)
+                    
+                    # Convert cached objects to model objects
+                    channels = [
+                        Channel(
+                            channel_id=ch.channel_id,
+                            name=ch.name,
+                            url=ch.url,
+                            logo=ch.logo,
+                            category=ch.category
+                        )
+                        for ch in cached_channels
+                    ]
+                    
+                    vod_items = [
+                        VODItem(
+                            stream_id=vod.stream_id,
+                            name=vod.name,
+                            url=vod.url,
+                            cover=vod.cover,
+                            plot=vod.plot,
+                            rating=vod.rating,
+                            year=vod.year,
+                            genre=vod.genre,
+                            duration=vod.duration,
+                            director=vod.director,
+                            cast=vod.cast,
+                            category=vod.category
+                        )
+                        for vod in cached_vod
+                    ]
+                    
+                    series_items = [
+                        SeriesItem(
+                            stream_id=ser.stream_id,
+                            name=ser.name,
+                            url=ser.url,
+                            cover=ser.cover,
+                            plot=ser.plot,
+                            rating=ser.rating,
+                            year=ser.year,
+                            genre=ser.genre,
+                            director=ser.director,
+                            cast=ser.cast,
+                            category=ser.category,
+                            season=ser.season,
+                            episode=ser.episode
+                        )
+                        for ser in cached_series
+                    ]
+                    
+                    logger.info(f"Loaded from cache: {len(channels)} channels, {len(vod_items)} VOD, {len(series_items)} series")
+                    return channels, vod_items, series_items
+        
+        # If no cache or forcing refresh, parse the file
+        logger.info(f"Parsing M3U file: {file_path} (force_refresh={force_refresh})")
+        
         channels = []
         vod_items = []
         series_items = []
@@ -46,7 +121,7 @@ class PlaylistParser:
                 if not url:
                     continue
                 
-                # Extract name (after last comma)
+                # Extract name
                 name_match = re.search(r',(.+)$', info_line)
                 name = name_match.group(1).strip() if name_match else "Unknown"
                 
@@ -54,7 +129,7 @@ class PlaylistParser:
                 logo_match = re.search(r'tvg-logo="([^"]+)"', info_line)
                 logo = logo_match.group(1) if logo_match else None
                 
-                # Extract category/group
+                # Extract category
                 group_match = re.search(r'group-title="([^"]+)"', info_line)
                 category = group_match.group(1) if group_match else "Uncategorized"
                 
@@ -62,10 +137,10 @@ class PlaylistParser:
                 id_match = re.search(r'tvg-id="([^"]+)"', info_line)
                 item_id = id_match.group(1) if id_match else str(hash(url))
                 
-                # Determine type: Live TV, Movie, or Series
+                # Determine type
                 is_series = any([
-                    re.search(r'\bS\d{1,2}\b', name),  # S01, S1, etc.
-                    re.search(r'\bS\d{1,2}E\d{1,2}\b', name),  # S01E01
+                    re.search(r'\bS\d{1,2}\b', name),
+                    re.search(r'\bS\d{1,2}E\d{1,2}\b', name),
                     'series' in category.lower(),
                     'serija' in category.lower(),
                     'sezona' in category.lower()
@@ -78,7 +153,6 @@ class PlaylistParser:
                 ]) and not is_series
                 
                 if is_series:
-                    # Extract season and episode
                     season_match = re.search(r'S(\d{1,2})', name)
                     episode_match = re.search(r'E(\d{1,2})', name)
                     
@@ -104,7 +178,6 @@ class PlaylistParser:
                     vod_items.append(vod_item)
                     
                 else:
-                    # Live TV Channel
                     channel = Channel(
                         channel_id=item_id,
                         name=name,
@@ -114,13 +187,21 @@ class PlaylistParser:
                     )
                     channels.append(channel)
             
-            # Fetch TMDB data for movies (batch)
-            # NOTE: Disabled in pilot version - ratings not needed
-            # if vod_items:
-            #     logger.info(f"Fetching TMDB data for {len(vod_items)} movies...")
-            #     PlaylistParser._enrich_vod_with_tmdb(vod_items)
+            logger.info(f"Parsed {len(channels)} channels, {len(vod_items)} movies, {len(series_items)} series")
             
-            logger.info(f"Parsed {len(channels)} channels, {len(vod_items)} movies, and {len(series_items)} series")
+            # Cache the parsed data
+            saved_playlist = db.get_last_playlist()
+            if saved_playlist and saved_playlist.get('url') == file_path:
+                playlist_id = saved_playlist.get('id')
+                logger.info(f"Caching playlist data (playlist_id: {playlist_id})")
+                
+                db.cache_channels(channels, playlist_id)
+                db.cache_vod_items(vod_items, playlist_id)
+                db.cache_series_items(series_items, playlist_id)
+                db.update_playlist_refresh_time(playlist_id)
+                
+                logger.info("Playlist data cached successfully")
+            
             return channels, vod_items, series_items
         
         except Exception as e:
@@ -128,18 +209,89 @@ class PlaylistParser:
             raise
     
     @staticmethod
-    def parse_xtream_codes(server_url: str, username: str, password: str) -> Tuple[List[Channel], List[VODItem], List[SeriesItem]]:
+    def parse_xtream_codes(server_url: str, username: str, password: str, force_refresh: bool = False) -> Tuple[List[Channel], List[VODItem], List[SeriesItem]]:
         """
-        Parse Xtream Codes API and extract channels, movies, and series
+        Parse Xtream Codes API and extract channels, movies, and series.
+        Uses database cache if available and not forcing refresh.
         
         Args:
             server_url: Xtream server URL
             username: Username
             password: Password
+            force_refresh: If True, ignore cache and re-fetch
             
         Returns:
             Tuple of (channels, vod_items, series_items)
         """
+        db = Database()
+        
+        # Check if we have cached data (unless forcing refresh)
+        if not force_refresh:
+            saved_playlist = db.get_last_playlist()
+            if saved_playlist and saved_playlist.get('server') == server_url:
+                playlist_id = saved_playlist.get('id')
+                
+                if db.has_cached_playlist(playlist_id):
+                    logger.info(f"Loading Xtream playlist from cache (playlist_id: {playlist_id})")
+                    
+                    cached_channels = db.get_cached_channels(playlist_id)
+                    cached_vod = db.get_cached_vod_items(playlist_id)
+                    cached_series = db.get_cached_series_items(playlist_id)
+                    
+                    channels = [
+                        Channel(
+                            channel_id=ch.channel_id,
+                            name=ch.name,
+                            url=ch.url,
+                            logo=ch.logo,
+                            category=ch.category
+                        )
+                        for ch in cached_channels
+                    ]
+                    
+                    vod_items = [
+                        VODItem(
+                            stream_id=vod.stream_id,
+                            name=vod.name,
+                            url=vod.url,
+                            cover=vod.cover,
+                            plot=vod.plot,
+                            rating=vod.rating,
+                            year=vod.year,
+                            genre=vod.genre,
+                            duration=vod.duration,
+                            director=vod.director,
+                            cast=vod.cast,
+                            category=vod.category
+                        )
+                        for vod in cached_vod
+                    ]
+                    
+                    series_items = [
+                        SeriesItem(
+                            stream_id=ser.stream_id,
+                            name=ser.name,
+                            url=ser.url,
+                            cover=ser.cover,
+                            plot=ser.plot,
+                            rating=ser.rating,
+                            year=ser.year,
+                            genre=ser.genre,
+                            director=ser.director,
+                            cast=ser.cast,
+                            category=ser.category,
+                            season=ser.season,
+                            episode=ser.episode
+                        )
+                        for ser in cached_series
+                    ]
+                    
+                    logger.info(f"Loaded from cache: {len(channels)} channels, {len(vod_items)} VOD, {len(series_items)} series")
+                    return channels, vod_items, series_items
+        
+        # If no cache or forcing refresh, fetch from API
+        logger.info(f"Fetching Xtream Codes from API: {server_url} (force_refresh={force_refresh})")
+        
         channels = []
         vod_items = []
         series_items = []
@@ -163,7 +315,7 @@ class PlaylistParser:
                 )
                 channels.append(channel)
             
-            # Get VOD streams (movies)
+            # Get VOD streams
             vod_url = f"{server_url}/player_api.php?username={username}&password={password}&action=get_vod_streams"
             response = requests.get(vod_url, timeout=10)
             response.raise_for_status()
@@ -189,7 +341,7 @@ class PlaylistParser:
                 )
                 vod_items.append(vod_item)
             
-            # Get Series streams
+            # Get Series
             series_url = f"{server_url}/player_api.php?username={username}&password={password}&action=get_series"
             response = requests.get(series_url, timeout=10)
             response.raise_for_status()
@@ -213,41 +365,23 @@ class PlaylistParser:
                 )
                 series_items.append(series_item)
             
-            # Fetch TMDB data for movies (batch)
-            # NOTE: Disabled in pilot version - ratings not needed
-            # if vod_items:
-            #     logger.info(f"Fetching TMDB data for {len(vod_items)} movies...")
-            #     PlaylistParser._enrich_vod_with_tmdb(vod_items)
+            logger.info(f"Parsed {len(channels)} channels, {len(vod_items)} movies, {len(series_items)} series from Xtream")
             
-            logger.info(f"Parsed {len(channels)} channels, {len(vod_items)} movies, and {len(series_items)} series from Xtream Codes")
+            # Cache the data
+            saved_playlist = db.get_last_playlist()
+            if saved_playlist and saved_playlist.get('server') == server_url:
+                playlist_id = saved_playlist.get('id')
+                logger.info(f"Caching Xtream playlist (playlist_id: {playlist_id})")
+                
+                db.cache_channels(channels, playlist_id)
+                db.cache_vod_items(vod_items, playlist_id)
+                db.cache_series_items(series_items, playlist_id)
+                db.update_playlist_refresh_time(playlist_id)
+                
+                logger.info("Xtream playlist cached successfully")
+            
             return channels, vod_items, series_items
         
         except Exception as e:
             logger.error(f"Failed to parse Xtream Codes: {e}")
             raise
-    
-    @staticmethod
-    def _enrich_vod_with_tmdb(vod_items: List[VODItem]):
-        """
-        Enrich VOD items with TMDB metadata (batch operation)
-        
-        Args:
-            vod_items: List of VOD items to enrich
-        """
-        try:
-            tmdb = TMDBService()
-            
-            # Get cached ratings first (1 DB query)
-            ratings = tmdb.batch_fetch_ratings(vod_items)
-            
-            # Apply ratings to items
-            for item in vod_items:
-                if item.stream_id in ratings:
-                    rating_data = ratings[item.stream_id]
-                    item.tmdb_rating = rating_data.get('rating')
-                    item.tmdb_vote_count = rating_data.get('vote_count')
-            
-            logger.info(f"Enriched {len(vod_items)} VOD items with TMDB data")
-            
-        except Exception as e:
-            logger.error(f"Failed to enrich VOD with TMDB: {e}")

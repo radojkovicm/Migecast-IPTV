@@ -112,12 +112,15 @@ class VideoPlayer(QObject):
     
     def stop(self):
         """Stop playback"""
+        logger.info(f"VideoPlayer.stop() called - media_player exists: {self.media_player is not None}")
         if self.media_player:
+            logger.info(f"Stopping media_player - is_playing: {self.media_player.is_playing()}")
             self.media_player.stop()
+            logger.info("media_player.stop() executed")
         self.current_url = None
         if self.reconnect_timer:
             self.reconnect_timer.stop()
-        logger.info("Playback stopped")
+        logger.info("Playback stopped - reconnect_timer stopped")
     
     def set_volume(self, volume: int):
         """Set volume (0-100)"""

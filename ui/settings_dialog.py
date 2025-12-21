@@ -19,9 +19,10 @@ class PlaylistLoaderThread(QThread):
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
     
-    def __init__(self, playlist_type: str, **kwargs):
+    def __init__(self, playlist_type: str, force_refresh: bool = False, **kwargs):
         super().__init__()
         self.playlist_type = playlist_type
+        self.force_refresh = force_refresh
         self.kwargs = kwargs
     
     def run(self):
@@ -33,7 +34,10 @@ class PlaylistLoaderThread(QThread):
                     raise ValueError("M3U file path is empty")
                 
                 self.progress.emit("Učitavanje M3U fajla...")
-                channels, vod_items, series_items = PlaylistParser.parse_m3u_file(file_path)
+                channels, vod_items, series_items = PlaylistParser.parse_m3u_file(
+                    file_path, 
+                    force_refresh=self.force_refresh
+                )
                 
             elif self.playlist_type == 'xtream':
                 server = self.kwargs.get('server_url', '')
@@ -45,7 +49,8 @@ class PlaylistLoaderThread(QThread):
                 
                 self.progress.emit("Povezivanje sa Xtream serverom...")
                 channels, vod_items, series_items = PlaylistParser.parse_xtream_codes(
-                    server, username, password
+                    server, username, password,
+                    force_refresh=self.force_refresh
                 )
             else:
                 raise ValueError(f"Unknown playlist type: {self.playlist_type}")
@@ -72,6 +77,7 @@ class SettingsDialog(QDialog):
     """Settings dialog window"""
     
     playlist_added = pyqtSignal(list, list, list)  # channels, vod_items, series_items
+    refresh_requested = pyqtSignal()  # NOVO - signal za refresh
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -126,6 +132,32 @@ class SettingsDialog(QDialog):
         """Create playlists management tab"""
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        
+        # NOVO - Refresh sekcija (na vrhu)
+        refresh_group = QGroupBox("🔄 Osvežavanje Liste")
+        refresh_group.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        refresh_layout = QVBoxLayout(refresh_group)
+        
+        refresh_info = QLabel(
+            "Osvežite trenutnu listu da preuzmete najnovije kanale, filmove i serije.\n"
+            "Ovo će ponovo učitati listu sa servera."
+        )
+        refresh_info.setStyleSheet("font-size: 12pt; color: #666; font-weight: normal;")
+        refresh_info.setWordWrap(True)
+        refresh_layout.addWidget(refresh_info)
+        
+        refresh_btn = QPushButton("🔄 Osveži Trenutnu Listu")
+        refresh_btn.setStyleSheet("""
+            font-size: 14pt; 
+            padding: 10px 20px; 
+            background-color: #FF9800; 
+            color: white;
+            font-weight: bold;
+        """)
+        refresh_btn.clicked.connect(self.refresh_current_playlist)
+        refresh_layout.addWidget(refresh_btn)
+        
+        layout.addWidget(refresh_group)
         
         # M3U File section
         m3u_group = QGroupBox("📄 Dodaj M3U Fajl")
@@ -286,6 +318,41 @@ class SettingsDialog(QDialog):
         
         return widget
     
+    def refresh_current_playlist(self):
+        """Refresh current playlist - re-parse from source"""
+        db = Database()
+        saved_playlist = db.get_last_playlist()
+        
+        if not saved_playlist:
+            QMessageBox.warning(
+                self, 
+                "Greška", 
+                "Nema aktivne playliste.\n\nMolimo prvo učitajte IPTV listu."
+            )
+            return
+        
+        # Confirm refresh
+        reply = QMessageBox.question(
+            self,
+            "Potvrda Osvežavanja",
+            f"Da li želite da osvežite trenutnu listu?\n\n"
+            f"Lista: {saved_playlist.get('name', 'Unknown')}\n\n"
+            f"Ovo će ponovo preuzeti sve kanale, filmove i serije sa servera.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.No:
+            return
+        
+        logger.info("Refreshing playlist from settings...")
+        
+        # Emit signal to main window to handle refresh
+        self.refresh_requested.emit()
+        
+        # Close settings dialog
+        self.accept()
+    
     def browse_m3u_file(self):
         """Browse for M3U file"""
         file_path, _ = QFileDialog.getOpenFileName(
@@ -327,8 +394,8 @@ class SettingsDialog(QDialog):
             self.progress_dialog.setCancelButton(None)
             self.progress_dialog.show()
             
-            # Start loader thread
-            self.loader_thread = PlaylistLoaderThread('m3u', file_path=file_path)
+            # Start loader thread (force_refresh=True for new playlist)
+            self.loader_thread = PlaylistLoaderThread('m3u', force_refresh=True, file_path=file_path)
             self.loader_thread.progress.connect(self.on_loading_progress)
             self.loader_thread.finished.connect(lambda ch, vod, ser: self.on_playlist_loaded(playlist_name, 'm3u', ch, vod, ser, path=file_path))
             self.loader_thread.error.connect(self.on_loading_error)
@@ -371,8 +438,8 @@ class SettingsDialog(QDialog):
             self.progress_dialog.setCancelButton(None)
             self.progress_dialog.show()
             
-            # Start loader thread
-            self.loader_thread = PlaylistLoaderThread('xtream', server_url=server, username=username, password=password)
+            # Start loader thread (force_refresh=True for new playlist)
+            self.loader_thread = PlaylistLoaderThread('xtream', force_refresh=True, server_url=server, username=username, password=password)
             self.loader_thread.progress.connect(self.on_loading_progress)
             self.loader_thread.finished.connect(lambda ch, vod, ser: self.on_playlist_loaded(playlist_name, 'xtream', ch, vod, ser, url=server, username=username, password=password))
             self.loader_thread.error.connect(self.on_loading_error)
@@ -404,15 +471,13 @@ class SettingsDialog(QDialog):
             db = Database()
             
             if playlist_type == 'm3u':
-                # For M3U, use 'path' as 'url'
-                db.save_playlist(
+                playlist_id = db.save_playlist(
                     name=name,
                     playlist_type='M3U',
                     url=kwargs.get('path', '')
                 )
             elif playlist_type == 'xtream':
-                # For Xtream, use server, username, password
-                db.save_playlist(
+                playlist_id = db.save_playlist(
                     name=name,
                     playlist_type='Xtream',
                     server=kwargs.get('url', ''),
@@ -420,7 +485,15 @@ class SettingsDialog(QDialog):
                     password=kwargs.get('password', '')
                 )
             
-            # Emit signal first to update main window
+            # Cache the data
+            if playlist_id:
+                logger.info(f"Caching playlist data for playlist_id: {playlist_id}")
+                db.cache_channels(channels, playlist_id)
+                db.cache_vod_items(vod_items, playlist_id)
+                db.cache_series_items(series_items, playlist_id)
+                db.update_playlist_refresh_time(playlist_id)
+            
+            # Emit signal to update main window
             self.playlist_added.emit(channels, vod_items, series_items)
             
             # Show success message

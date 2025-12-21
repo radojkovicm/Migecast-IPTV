@@ -44,7 +44,10 @@ class FullscreenControls(QWidget):
         self.timeline_slider.setRange(0, 1000)
         self.timeline_slider.setValue(0)
         self.timeline_slider.setStyleSheet("QSlider { background-color: transparent; }")
+        # Enable click on slider to seek
+        self.timeline_slider.sliderPressed.connect(lambda: self.position_changed.emit(self.timeline_slider.value()))
         self.timeline_slider.sliderMoved.connect(self.position_changed.emit)
+        self.timeline_slider.sliderReleased.connect(lambda: self.position_changed.emit(self.timeline_slider.value()))
         timeline_layout.addWidget(self.timeline_slider)
         
         self.duration_label = QLabel("00:00")
@@ -162,6 +165,7 @@ class PlayerWidget(QWidget):
     
     previous_requested = pyqtSignal()
     next_requested = pyqtSignal()
+    playback_exited = pyqtSignal()  # Emitted when user exits playback
     
     def __init__(self, video_player: VideoPlayer, parent=None):
         super().__init__(parent)
@@ -215,7 +219,7 @@ class PlayerWidget(QWidget):
         self.fullscreen_controls.next_clicked.connect(self._on_next)
         self.fullscreen_controls.volume_changed.connect(self.set_volume)
         self.fullscreen_controls.position_changed.connect(self.set_position)
-        self.fullscreen_controls.exit_fullscreen_clicked.connect(self.exit_fullscreen)
+        self.fullscreen_controls.exit_fullscreen_clicked.connect(self._exit_fullscreen_and_stop)
         
         # Control bar
         self.control_bar = QWidget()
@@ -232,7 +236,10 @@ class PlayerWidget(QWidget):
         self.timeline_slider = QSlider(Qt.Orientation.Horizontal)
         self.timeline_slider.setRange(0, 1000)
         self.timeline_slider.setValue(0)
+        # Enable click on slider to seek
+        self.timeline_slider.sliderPressed.connect(lambda: self.set_position(self.timeline_slider.value()))
         self.timeline_slider.sliderMoved.connect(self.set_position)
+        self.timeline_slider.sliderReleased.connect(lambda: self.set_position(self.timeline_slider.value()))
         timeline_layout.addWidget(self.timeline_slider)
         
         self.duration_label = QLabel("00:00")
@@ -257,6 +264,11 @@ class PlayerWidget(QWidget):
         self.stop_btn.setStyleSheet("font-size: 16pt; padding: 5px 15px;")
         self.stop_btn.clicked.connect(self.stop)
         button_layout.addWidget(self.stop_btn)
+        
+        back_btn = QPushButton("⬅ Nazad")
+        back_btn.setStyleSheet("font-size: 14pt; padding: 5px 15px; background-color: #444; color: white;")
+        back_btn.clicked.connect(self._on_back_clicked)
+        button_layout.addWidget(back_btn)
         
         next_btn = QPushButton("⏭")
         next_btn.setStyleSheet("font-size: 16pt; padding: 5px 15px;")
@@ -381,6 +393,11 @@ class PlayerWidget(QWidget):
         logger.debug("Next requested")
         self.next_requested.emit()
     
+    def _on_back_clicked(self):
+        logger.info("Back requested from playback")
+        self.stop()
+        self.playback_exited.emit()
+    
     def _on_video_click(self):
         if self.is_fullscreen:
             self._show_cursor()
@@ -453,8 +470,15 @@ class PlayerWidget(QWidget):
     
     def _fullscreen_key_press(self, event: QKeyEvent):
         key = event.key()
+        logger.info(f"Fullscreen key pressed: {key} (Escape={Qt.Key.Key_Escape}, F={Qt.Key.Key_F})")
         if key == Qt.Key.Key_Escape or key == Qt.Key.Key_F:
+            logger.info("ESC/F pressed in fullscreen - stopping player and exiting fullscreen")
+            logger.info(f"video_player object: {self.video_player}")
+            logger.info(f"is_playing before stop: {self.is_playing}")
+            self.stop()  # Stop player immediately
+            logger.info(f"is_playing after stop: {self.is_playing}")
             self.exit_fullscreen()
+            logger.info("Fullscreen exited")
         elif key == Qt.Key.Key_Space:
             self.toggle_play_pause()
         elif key == Qt.Key.Key_PageUp:
@@ -495,6 +519,14 @@ class PlayerWidget(QWidget):
             self.fullscreen_window = None
         
         logger.info("Fullscreen exited")
+    
+    def _exit_fullscreen_and_stop(self):
+        """Exit fullscreen and stop playback"""
+        logger.info("Exit fullscreen requested - stopping player and exiting fullscreen")
+        self.stop()
+        self.exit_fullscreen()
+        # Emit signal so main window knows playback ended
+        self.playback_exited.emit()
     
     def play_url(self, url: str):
         if not url:
@@ -538,7 +570,10 @@ class PlayerWidget(QWidget):
     
     def stop(self):
         try:
+            logger.info("PlayerWidget.stop() called")
+            logger.info(f"video_player: {self.video_player}")
             self.video_player.stop()
+            logger.info("video_player.stop() executed")
             self.is_playing = False
             self.play_btn.setText("▶")
             self.fullscreen_controls.set_playing(False)
@@ -546,8 +581,9 @@ class PlayerWidget(QWidget):
             self.position_timer.stop()
             self.timeline_slider.setValue(0)
             self.time_label.setText("00:00")
+            logger.info("PlayerWidget.stop() completed successfully")
         except Exception as e:
-            logger.error(f"Error in stop: {e}")
+            logger.error(f"Error in stop: {e}", exc_info=True)
     
     def set_volume(self, volume: int):
         self.video_player.set_volume(volume)
@@ -559,8 +595,29 @@ class PlayerWidget(QWidget):
         self.fullscreen_controls.volume_slider.blockSignals(False)
     
     def set_position(self, position: int):
-        if self.video_player.media_player:
-            self.video_player.media_player.set_position(position / 1000.0)
+        """Set playback position"""
+        if not self.video_player.media_player:
+            return
+        
+        # Convert slider position (0-1000) to time position (0.0-1.0)
+        position_fraction = position / 1000.0
+        
+        # Set position
+        self.video_player.media_player.set_position(position_fraction)
+        
+        # Update labels immediately
+        length = self.video_player.media_player.get_length()
+        if length > 0:
+            time_ms = int(length * position_fraction)
+            
+            time_min = time_ms // 60000
+            time_sec = (time_ms // 1000) % 60
+            self.time_label.setText(f"{time_min:02d}:{time_sec:02d}")
+            
+            if self.is_fullscreen:
+                self.fullscreen_controls.set_position(time_ms, length)
+        
+        logger.info(f"Seeked to position: {position_fraction:.2%}")
     
     def update_position(self):
         if not self.video_player.media_player or not self.is_playing:
