@@ -16,14 +16,18 @@ logger = logging.getLogger(__name__)
 class MainWindow(QMainWindow):
     """Main application window"""
     
-    def __init__(self, video_player: VideoPlayer):
+    def __init__(self, video_player: VideoPlayer, database: Database):
         super().__init__()
         self.video_player = video_player
-        self.db = Database()
+        self.db = database
         self.current_playlist_data = None
         self.current_mode = 'menu'
         self.previous_mode = 'tv'  # Track the mode before playback for proper return
         self.current_detail_dialog = None  # Keep reference to detail dialog during playback
+        
+        # Track current series episodes for auto-play
+        self.current_series_episodes = []
+        self.current_episode_index = 0
         
         from ui.player_widget import PlayerWidget
         from ui.live_tv_widget import LiveTVWidget
@@ -209,11 +213,12 @@ class MainWindow(QMainWindow):
         self.live_tv_widget.setMaximumWidth(500)
         tv_layout.addWidget(self.live_tv_widget)
         
-        self.player_widget = self.PlayerWidget(self.video_player)
+        self.player_widget = self.PlayerWidget(self.video_player, self)
         self.player_widget.setMinimumWidth(640)
         self.player_widget.previous_requested.connect(self.play_previous)
         self.player_widget.next_requested.connect(self.play_next)
         self.player_widget.playback_exited.connect(self.on_playback_exited)
+        self.player_widget.auto_play_next_episode.connect(self.play_next_series_episode)
         tv_layout.addWidget(self.player_widget, stretch=1)
         
         self.category_stack.addWidget(tv_container)  # Index 0 - TV
@@ -517,7 +522,7 @@ class MainWindow(QMainWindow):
         # Save current mode for TV playback
         self.previous_mode = self.current_mode
         
-        self.player_widget.play_url(channel.url, content_type='tv')
+        self.player_widget.play_url(channel.url, content_type='tv', content_title=channel.name)
         self.status_bar.showMessage(f"Reprodukcija: {channel.name}")
     
     def play_vod(self, vod_item: VODItem):
@@ -545,7 +550,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(0)  # Show player
 
         # Play video
-        self.player_widget.play_url(vod_item.url, content_type='vod')
+        self.player_widget.play_url(vod_item.url, content_type='vod', content_title=vod_item.name)
         self.status_bar.showMessage(f"Reprodukcija: {vod_item.name}")
         self.db.mark_vod_watched(vod_item.stream_id, vod_item.name)
 
@@ -555,7 +560,11 @@ class MainWindow(QMainWindow):
     def play_series(self, series_name: str, episodes: list):
         """Play selected series - show season/episode selection dialog"""
         logger.info(f"Opening series detail: {series_name}")
-        
+        # Save episodes list for auto-play
+        self.current_series_episodes = sorted(
+            episodes,
+            key=lambda x: (int(x.season or 0), int(x.episode or 0))
+        )
         from ui.series_detail_dialog import SeriesDetailDialog
         
         dialog = SeriesDetailDialog(series_name, episodes, self.series_widget.image_cache, self.db, self)
@@ -567,21 +576,56 @@ class MainWindow(QMainWindow):
         dialog.show()
         
     def start_series_playback(self, episode: SeriesItem, dialog=None):
-        """Start series episode playback"""
+        """Start series episode playback with auto-play support"""
         logger.info(f"Playing series episode: {episode.name}")
+        logger.info(f"Current series episodes count: {len(self.current_series_episodes) if self.current_series_episodes else 0}")
         
-        # Save current mode at the moment when user clicks Play
+        # Save current mode
         self.previous_mode = self.current_mode
         
-        # Switch to player widget
-        self.stacked_widget.setCurrentIndex(0)  # Show player
+        # Find current episode in the list and get next episode info
+        if self.current_series_episodes:
+            try:
+                # Find current episode index
+                self.current_episode_index = next(
+                    (i for i, ep in enumerate(self.current_series_episodes) if ep.stream_id == episode.stream_id),
+                    -1
+                )
+                logger.info(f"Current episode index: {self.current_episode_index}")
+                
+                # Get next episode info (if exists)
+                next_episode_info = None
+                if self.current_episode_index >= 0 and self.current_episode_index < len(self.current_series_episodes) - 1:
+                    next_ep = self.current_series_episodes[self.current_episode_index + 1]
+                    next_episode_info = {
+                        'title': next_ep.name,
+                        'url': next_ep.url,
+                        'stream_id': next_ep.stream_id,
+                        'season': next_ep.season,
+                        'episode': next_ep.episode
+                    }
+                    logger.info(f"Next episode available: {next_ep.name}")
+                else:
+                    logger.info("This is the last episode")
+            
+            except Exception as e:
+                logger.error(f"Error finding next episode: {e}")
+                next_episode_info = None
+        else:
+            logger.warning("No current_series_episodes set")
+            next_episode_info = None
         
-        # Play video
-        self.player_widget.play_url(episode.url, content_type='series')
+        # Switch to player widget
+        self.stacked_widget.setCurrentIndex(0)
+        logger.info(f"Playing with auto-play info: {next_episode_info}")
+        
+        # Play video with next episode info
+        series_title = f"{self.current_series.name} - {episode.name}" if hasattr(self, 'current_series') else episode.name
+        self.player_widget.play_url(episode.url, content_type='series', next_episode_info=next_episode_info, content_title=series_title)
         self.status_bar.showMessage(f"Reprodukcija: {episode.name}")
         self.db.mark_series_watched(episode.stream_id, episode.name)
         
-        # Enter fullscreen automatically after short delay
+        # Enter fullscreen automatically
         QTimer.singleShot(500, self.player_widget.enter_fullscreen)
     
     def play_next(self):
@@ -593,6 +637,28 @@ class MainWindow(QMainWindow):
         """Play previous channel/item"""
         if self.current_mode == 'tv':
             self.live_tv_widget.select_previous_channel()
+    
+    def play_next_series_episode(self):
+        """Play next episode (triggered by auto-play)"""
+        logger.info(f"play_next_series_episode called - current_episode_index: {self.current_episode_index}")
+        logger.info(f"current_series_episodes count: {len(self.current_series_episodes) if self.current_series_episodes else 0}")
+        
+        if not self.current_series_episodes or self.current_episode_index < 0:
+            logger.warning("Cannot play next episode: no episode list or invalid index")
+            return
+        
+        next_index = self.current_episode_index + 1
+        logger.info(f"Next index: {next_index}")
+        
+        if next_index < len(self.current_series_episodes):
+            next_episode = self.current_series_episodes[next_index]
+            logger.info(f"Auto-playing next episode: {next_episode.name}")
+            
+            # Play next episode
+            self.start_series_playback(next_episode)
+        else:
+            logger.info("No more episodes - staying on last episode")
+            self.status_bar.showMessage("Nema više epizoda u sezoni")
     
     def closeEvent(self, event):
         """Handle window close event"""

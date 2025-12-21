@@ -16,6 +16,8 @@ class VideoPlayer(QObject):
     def __init__(self):
         super().__init__()
         
+        self._is_destroyed = False  # ← Track destruction state
+        
         try:
             # VLC instance with optimized options
             vlc_args = [
@@ -51,9 +53,6 @@ class VideoPlayer(QObject):
             self.event_manager.event_attach(vlc.EventType.MediaPlayerPaused, self.on_paused)
             self.event_manager.event_attach(vlc.EventType.MediaPlayerStopped, self.on_stopped)
             
-            # Mouse events from VLC
-            self.event_manager.event_attach(vlc.EventType.MediaPlayerVout, self._on_vout)
-            
             logger.info("VideoPlayer initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize VideoPlayer: {e}", exc_info=True)
@@ -61,15 +60,51 @@ class VideoPlayer(QObject):
             self.media_player = None
             self.event_manager = None
             self.reconnect_timer = None
-    
-    def _on_vout(self, event):
-        """Called when video output is available - attach mouse events"""
+            
+    def cleanup(self):
+        """Cleanup VLC resources"""
+        if self._is_destroyed:
+            return
+        
+        logger.info("Cleaning up VideoPlayer...")
+        self._is_destroyed = True
+        
         try:
-            self.media_player.video_set_mouse_input(True)
-            self.media_player.video_set_key_input(True)
-            logger.info("VLC mouse/key input enabled")
+            # Stop reconnect timer
+            if self.reconnect_timer:
+                self.reconnect_timer.stop()
+                self.reconnect_timer = None
+            
+            # Stop playback
+            if self.media_player:
+                try:
+                    if self.media_player.is_playing():
+                        self.media_player.stop()
+                except:
+                    pass
+                
+                # Release media player
+                try:
+                    self.media_player.release()
+                except Exception as e:
+                    logger.error(f"Error releasing media_player: {e}")
+                self.media_player = None
+            
+            # Release instance
+            if self.instance:
+                try:
+                    self.instance.release()
+                except Exception as e:
+                    logger.error(f"Error releasing VLC instance: {e}")
+                self.instance = None
+            
+            logger.info("VideoPlayer cleanup complete")
         except Exception as e:
-            logger.error(f"Failed to enable VLC input: {e}")
+            logger.error(f"Error during VideoPlayer cleanup: {e}")
+    
+    def __del__(self):
+        """Destructor - ensure cleanup"""
+        self.cleanup()
     
     def play(self, url: str):
         """Play media from URL"""

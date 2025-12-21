@@ -39,6 +39,17 @@ class FavoriteSeries(Base):
     name = Column(String)
     added_at = Column(DateTime, default=datetime.now)
 
+class WatchedSeries(Base):
+    """Watched Series episodes table"""
+    __tablename__ = 'watched_series'
+    
+    id = Column(Integer, primary_key=True)
+    stream_id = Column(String, nullable=False)
+    series_id = Column(String)  # ID serije (za grupisanje epizoda)
+    name = Column(String)
+    season = Column(String)
+    episode = Column(String)
+    watched_at = Column(DateTime, default=datetime.now)
 
 class WatchedVOD(Base):
     """Watched VOD items table"""
@@ -340,21 +351,34 @@ class Database:
             logger.error(f"Failed to fetch favorite series IDs: {e}")
             return set()
         
-    def mark_series_watched(self, stream_id: str, name: str):
+    def mark_series_watched(self, stream_id: str, name: str = "", series_id: str = "", season: str = "", episode: str = ""):
         """Mark series episode as watched"""
         try:
-            self.cursor.execute("""
-                INSERT OR REPLACE INTO series_history (stream_id, name, watched_date)
-                VALUES (?, ?, datetime('now'))
-            """, (stream_id, name))
-            self.conn.commit()
+            # Proveri da li već postoji
+            existing = self.session.query(WatchedSeries).filter_by(stream_id=stream_id).first()
+            
+            if existing:
+                # Ažuriraj timestamp
+                existing.watched_at = datetime.now()
+            else:
+                # Dodaj novi
+                watched = WatchedSeries(
+                    stream_id=stream_id,
+                    series_id=series_id,
+                    name=name,
+                    season=season,
+                    episode=episode
+                )
+                self.session.add(watched)
+            
+            self.session.commit()
             logger.info(f"Marked series as watched: {name}")
+            return True
         except Exception as e:
+            self.session.rollback()
             logger.error(f"Failed to mark series as watched: {e}")
-    
-    # ============================================================
-    # WATCHED VOD (OPTIMIZED WITH BATCH)
-    # ============================================================
+            return False
+
     
     def mark_vod_watched(self, stream_id: str, name: str = ""):
         """Mark VOD as watched"""
