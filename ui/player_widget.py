@@ -130,11 +130,13 @@ class FullscreenControls(QWidget):
         
         control_layout.addStretch()
         
-        volume_label = QLabel("🔊")
-        volume_label.setStyleSheet("font-size: 20pt; color: white;")
-        control_layout.addWidget(volume_label)
-        
+        self.volume_icon = QLabel("🔊")
+        self.volume_icon.setStyleSheet("font-size: 20pt; color: white;")
+        self.volume_icon.setCursor(Qt.CursorShape.PointingHandCursor)
+        control_layout.addWidget(self.volume_icon)
+
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
+
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(70)
         self.volume_slider.setFixedWidth(150)
@@ -200,15 +202,36 @@ class VideoFrame(QFrame):
         self.pending_click = False
     
     def mousePressEvent(self, event):
+        player_widget = self.parent()
+        while player_widget and not hasattr(player_widget, 'content_type'):
+            player_widget = player_widget.parent()
+
+        # Ako NISMO u TV modu, ignoriši double-click logiku potpuno
+        if not player_widget or player_widget.content_type != 'tv':
+            super().mousePressEvent(event)
+            return
+
+        # TV MOD: omogući double-click za fullscreen toggle
+        logger.info(f"🖱️ VideoFrame MOUSE PRESS (TV mode) - button={event.button()}")
+
         if event.button() == Qt.MouseButton.LeftButton:
             if self.click_timer.isActive():
+                logger.info("🖱️🖱️ DOUBLE CLICK DETECTED (TV mode)")
                 self.click_timer.stop()
                 self.pending_click = False
                 self.double_clicked.emit()
             else:
                 self.pending_click = True
                 self.click_timer.start(300)
+        
         super().mousePressEvent(event)
+
+    def _emit_single_click(self):
+        if self.pending_click:
+            logger.info("🖱️ Single click CONFIRMED (timeout) - emitting single_clicked")
+            self.pending_click = False
+            self.single_clicked.emit()
+
     
     def _emit_single_click(self):
         if self.pending_click:
@@ -233,47 +256,70 @@ class PlayerWidget(QWidget):
         self.is_fullscreen = False
         self.is_playing = False
         self.fullscreen_window = None
-        self.content_type = 'vod'  # Default: 'tv', 'vod', or 'series'
+        self.content_type = 'vod'
         
         self.position_timer = QTimer()
         self.position_timer.timeout.connect(self.update_position)
         self.position_timer.setInterval(200)
         
-        # Cursor hide timer for fullscreen
         self.cursor_timer = QTimer()
         self.cursor_timer.setSingleShot(True)
         self.cursor_timer.timeout.connect(self._hide_cursor)
         
-        # Mouse polling timer for fullscreen
         self.mouse_poll_timer = QTimer()
         self.mouse_poll_timer.timeout.connect(self._poll_mouse)
-        self.mouse_poll_timer.setInterval(50)  # Faster polling for better click detection
+        self.mouse_poll_timer.setInterval(50)
         self.last_mouse_pos = QPoint()
         
-        # Click detection state
         self.mouse_was_pressed = False
-        self.click_times = []  # List of recent click timestamps
+        self.click_times = []
         
         self.init_ui()
         self._setup_vlc_output()
+        
+        # ← DODAJ OVDE (POSLE init_ui):
+        # Double-click timer za video_frame (VLC mouse workaround)
+        self.video_click_timer = QTimer()
+        self.video_click_timer.setSingleShot(True)
+        self.video_click_timer.timeout.connect(self._video_single_click_action)
+        
+        # Install na OVERLAY, ne video_frame
+        QTimer.singleShot(200, lambda: self.click_overlay.installEventFilter(self))
+        
+        # DODAJ: Flag za non-fullscreen double click
+        self.normal_click_times = []
+        
+        # PROMENI: Pokreni mouse polling UVEK (ne samo u fullscreen)
+        self.mouse_poll_timer.start()
     
     def init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         
-        # Video frame
+        # Video frame container
+        video_container = QWidget()
+        video_container_layout = QVBoxLayout(video_container)
+        video_container_layout.setContentsMargins(0, 0, 0, 0)
+
         self.video_frame = VideoFrame()
         self.video_frame.setMinimumSize(640, 480)
-        self.video_frame.double_clicked.connect(self.toggle_fullscreen)
-        self.video_frame.single_clicked.connect(self._on_video_click)
-        self.video_frame.mouse_moved.connect(self._on_video_mouse_move)
+        video_container_layout.addWidget(self.video_frame)
+
+        # Transparent click overlay OVER video
+        self.click_overlay = QLabel(video_container)
+        self.click_overlay.setStyleSheet("background: transparent;")
+        self.click_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.click_overlay.raise_()
+
+        layout.addWidget(video_container)
         
         layout.addWidget(self.video_frame)
         
         # Fullscreen controls
         self.fullscreen_controls = FullscreenControls()
         self.fullscreen_controls.hide()
+        self.fullscreen_controls.volume_icon.mousePressEvent = self._on_volume_icon_click
         self.fullscreen_controls.previous_clicked.connect(self._on_previous)
         self.fullscreen_controls.play_pause_clicked.connect(self.toggle_play_pause)
         self.fullscreen_controls.stop_clicked.connect(self.stop)
@@ -330,10 +376,12 @@ class PlayerWidget(QWidget):
         next_btn.clicked.connect(self._on_next)
         button_layout.addWidget(next_btn)
         
-        volume_label = QLabel("🔊")
-        volume_label.setStyleSheet("font-size: 14pt;")
-        button_layout.addWidget(volume_label)
-        
+        self.volume_icon = QLabel("🔊")
+        self.volume_icon.setStyleSheet("font-size: 14pt;")
+        self.volume_icon.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.volume_icon.mousePressEvent = self._on_volume_icon_click  # ← OVO
+        button_layout.addWidget(self.volume_icon)
+
         self.volume_slider = QSlider(Qt.Orientation.Horizontal)
         self.volume_slider.setRange(0, 100)
         self.volume_slider.setValue(70)
@@ -358,13 +406,17 @@ class PlayerWidget(QWidget):
         self.set_volume(70)
     
     def _setup_vlc_output(self):
-        QTimer.singleShot(100, self._set_vlc_output_internal)
+        QTimer.singleShot(200, lambda: self.click_overlay.installEventFilter(self))
     
     def _set_vlc_output_internal(self):
         if not self.video_player.media_player:
             return
         
         try:
+            # DISABLE VLC mouse/keyboard handling - KRITIČNO!
+            self.video_player.media_player.video_set_mouse_input(False)
+            self.video_player.media_player.video_set_key_input(False)
+            
             win_id = int(self.video_frame.winId())
             if sys.platform.startswith('linux'):
                 self.video_player.media_player.set_xwindow(win_id)
@@ -377,29 +429,52 @@ class PlayerWidget(QWidget):
             logger.error(f"Failed to set VLC output: {e}")
     
     def _poll_mouse(self):
-        """Poll mouse position and detect clicks for fullscreen mode"""
-        if not self.is_fullscreen or not self.fullscreen_window:
-            return
-        
+        """Poll mouse position and detect clicks"""
         current_pos = QCursor.pos()
         is_pressed = bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
         
-        # Detect mouse movement
-        if current_pos != self.last_mouse_pos:
-            self.last_mouse_pos = current_pos
-            self._show_cursor()
-            self.fullscreen_controls.show_with_timer()
-        
-        # Detect click (transition from not pressed to pressed)
-        if is_pressed and not self.mouse_was_pressed:
-            # Check if click is on video area (not on controls)
-            controls_rect = self.fullscreen_controls.geometry()
-            local_pos = self.fullscreen_window.mapFromGlobal(current_pos)
+        # Fullscreen handling
+        if self.is_fullscreen and self.fullscreen_window:
+            if current_pos != self.last_mouse_pos:
+                self.last_mouse_pos = current_pos
+                self._show_cursor()
+                self.fullscreen_controls.show_with_timer()
             
-            if not controls_rect.contains(local_pos) or not self.fullscreen_controls.isVisible():
-                self._on_fullscreen_click()
+            # ✅ DODAJ PROVERU: samo u TV modu reaguj na double-click
+            if self.content_type == 'tv':  # ← NOVO!
+                if is_pressed and not self.mouse_was_pressed:
+                    controls_rect = self.fullscreen_controls.geometry()
+                    local_pos = self.fullscreen_window.mapFromGlobal(current_pos)
+                    
+                    if not controls_rect.contains(local_pos) or not self.fullscreen_controls.isVisible():
+                        self._on_fullscreen_click()
+        
+        # Normal mode double-click detection (već ima TV proveru)
+        else:
+            if is_pressed and not self.mouse_was_pressed:
+                if self.video_frame.isVisible():
+                    local_pos = self.video_frame.mapFromGlobal(current_pos)
+                    if self.video_frame.rect().contains(local_pos):
+                        self._on_normal_video_click()  # ← OVO JE VEĆ OK
         
         self.mouse_was_pressed = is_pressed
+        
+    def _on_normal_video_click(self):
+        """Handle click on video in normal (non-fullscreen) mode - ONLY TV MODE"""
+        # ONLY allow double-click fullscreen toggle in TV mode
+        if self.content_type != 'tv':
+            return
+
+        current_time = time.time()
+        self.normal_click_times = [t for t in self.normal_click_times if current_time - t < 0.4]
+        self.normal_click_times.append(current_time)
+
+        logger.info(f"🖱️ Normal video click (TV mode), count: {len(self.normal_click_times)}")
+
+        if len(self.normal_click_times) >= 2:
+            logger.info("🖱️🖱️ DOUBLE CLICK (TV mode) - entering fullscreen")
+            self.normal_click_times.clear()
+            self.enter_fullscreen()
           
     def _on_fullscreen_click(self):
         """Handle click in fullscreen mode with double-click detection"""
@@ -407,19 +482,21 @@ class PlayerWidget(QWidget):
         
         # Remove old clicks (older than 400ms)
         self.click_times = [t for t in self.click_times if current_time - t < 0.4]
-        
-        # Add current click
         self.click_times.append(current_time)
         
         logger.debug(f"Fullscreen click detected, click_times count: {len(self.click_times)}")
         
         if len(self.click_times) >= 2:
-            # Double click detected - exit fullscreen
-            logger.info("Double click detected - exiting fullscreen")
+            # Double click detected
             self.click_times.clear()
-            self.exit_fullscreen()
+            
+            # ONLY exit fullscreen on double-click in TV mode
+            if self.content_type == 'tv':
+                logger.info("Double click detected (TV mode) - exiting fullscreen")
+                self.exit_fullscreen()
+            else:
+                logger.debug(f"Double click ignored (content_type={self.content_type})")
         else:
-            # Single click - show controls (with delay to allow for double click)
             QTimer.singleShot(400, self._check_single_click)
     
     def _check_single_click(self):
@@ -464,11 +541,12 @@ class PlayerWidget(QWidget):
             self.fullscreen_controls.show_with_timer()
     
     def toggle_fullscreen(self):
+        logger.info(f"🔄 toggle_fullscreen called - current state: is_fullscreen={self.is_fullscreen}")
         if self.is_fullscreen:
             self.exit_fullscreen()
         else:
             self.enter_fullscreen()
-    
+        
     def enter_fullscreen(self):
         if self.is_fullscreen:
             return
@@ -613,6 +691,11 @@ class PlayerWidget(QWidget):
             url: Media URL to play
             content_type: 'tv', 'vod', or 'series' - determines ESC behavior in fullscreen
         """
+        
+        # Postavi referencu ka MainWindow (za volume klik)
+        if self.parent() and hasattr(self.parent(), 'on_video_mute_toggle'):
+            self.main_window = self.parent()
+
         if not url:
             logger.warning("play_url called with empty URL")
             self.status_label.setText("Greška: Nema URL-a")
@@ -624,6 +707,11 @@ class PlayerWidget(QWidget):
 
         try:
             self._set_vlc_output_internal()
+            
+            # DODAJ OVO - svaki put kad se pušta novi video
+            if self.video_player.media_player:
+                self.video_player.media_player.video_set_mouse_input(False)
+                self.video_player.media_player.video_set_key_input(False)
             
             # Reset UI
             self.timeline_slider.blockSignals(True)
@@ -784,3 +872,82 @@ class PlayerWidget(QWidget):
         super().resizeEvent(event)
         if self.is_fullscreen and self.fullscreen_window:
             self._setup_fullscreen_controls()
+        
+        # Resize overlay to cover video
+        if hasattr(self, 'click_overlay') and hasattr(self, 'video_frame'):
+            self.click_overlay.setGeometry(0, 0, self.video_frame.width(), self.video_frame.height())
+            
+    def _on_volume_icon_click(self, event):
+        """Mute/unmute na klik volume icon - pamti poslednji volume"""
+        current_vol = self.volume_slider.value()
+        
+        if current_vol > 0:
+            # Mute: sačuvaj trenutni volume i postavi na 0
+            self.last_volume = current_vol  # ← NOVO: pamti poslednji
+            self.set_volume(0)
+            self.volume_icon.setText("🔇")  # ← KOSA CRTA
+            logger.debug(f"Muted: saved {current_vol}%, now 0")
+        else:
+            # Unmute: vrati na poslednji volume (ili default 70)
+            restore_vol = getattr(self, 'last_volume', 70)
+            self.set_volume(restore_vol)
+            self.volume_icon.setText("🔊")  # ← NORMALNO
+            logger.debug(f"Unmuted: restored {restore_vol}%")
+            
+    def set_volume(self, volume: int):
+        """Set volume i ažuriraj ikonu"""
+        self.video_player.set_volume(volume)
+        self.volume_slider.blockSignals(True)
+        self.volume_slider.setValue(volume)
+        self.volume_slider.blockSignals(False)
+        self.fullscreen_controls.volume_slider.blockSignals(True)
+        self.fullscreen_controls.volume_slider.setValue(volume)
+        self.fullscreen_controls.volume_slider.blockSignals(False)
+        
+        # Ažuriraj ikonu prema volume-u
+        if volume == 0:
+            self.volume_icon.setText("🔇")
+        else:
+            self.volume_icon.setText("🔊")
+            self.last_volume = volume
+            
+        if hasattr(self.fullscreen_controls, 'volume_icon'):
+            self.fullscreen_controls.volume_icon.setText("🔇" if volume == 0 else "🔊")
+            
+    def _on_double_click_detected(self):
+        """VideoFrame double click detected - only for TV mode"""
+        if self.content_type != 'tv':
+            logger.debug(f"Double-click ignored (content_type={self.content_type})")
+            return
+        
+        logger.info(f"🖱️ Double click - toggling fullscreen (TV mode)")
+        self.toggle_fullscreen()
+
+    def eventFilter(self, obj, event):
+        """Catch mouse events from click_overlay - ONLY TV MODE"""
+        if obj == self.click_overlay:
+            if event.type() == event.Type.MouseButtonPress:
+                if event.button() == Qt.MouseButton.LeftButton:
+                    if self.content_type != 'tv':
+                        logger.debug(f"Click ignored (content_type={self.content_type})")
+                        return False  # ← Propusti event dalje
+                    
+                    logger.info(f"🖱️ Click overlay LEFT CLICK detected (TV mode)")
+                    
+                    if self.video_click_timer.isActive():
+                        logger.info("🖱️🖱️ DOUBLE CLICK (TV mode) - toggling fullscreen")
+                        self.video_click_timer.stop()
+                        self.toggle_fullscreen()
+                        return True
+                    else:
+                        self.video_click_timer.start(300)
+                        return False
+        
+        return super().eventFilter(obj, event)
+
+    def _video_single_click_action(self):
+        """Single click action (after timeout)"""
+        logger.debug("Single click confirmed - showing controls")
+        if self.is_fullscreen:
+            self._show_cursor()
+            self.fullscreen_controls.show_with_timer()
