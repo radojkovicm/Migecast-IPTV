@@ -434,6 +434,10 @@ class SeriesDetailDialog(QDialog):
         # Sort episodes by episode number
         episodes_sorted = sorted(episodes, key=lambda x: int(x.episode) if x.episode and x.episode.isdigit() else 0)
         
+        # Update parent's episode list for auto-play
+        if self.parent() and hasattr(self.parent(), 'current_series_episodes'):
+            self.parent().current_series_episodes = episodes_sorted
+        
         for episode in episodes_sorted:
             episode_widget = EpisodeWidget(episode, self.image_cache)
             episode_widget.play_clicked.connect(self.on_episode_play_clicked)

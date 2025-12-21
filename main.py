@@ -71,7 +71,7 @@ def main():
     
     # Create and show main window
     try:
-        window = MainWindow(video_player)
+        window = MainWindow(video_player, db)  # ← DODAJ db
         window.showFullScreen() 
     except Exception as e:
         logger.error(f"Failed to create main window: {e}")
@@ -80,11 +80,14 @@ def main():
     # Run application
     try:
         exit_code = app.exec()
+        
+        if video_player:
+            video_player.cleanup()
+        
         sys.exit(exit_code)
     except Exception as e:
         logger.error(f"Application error: {e}")
         sys.exit(1)
-
 
 if __name__ == '__main__':
     try:
