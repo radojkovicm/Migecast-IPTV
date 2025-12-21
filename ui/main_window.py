@@ -38,6 +38,10 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.setup_shortcuts()
         
+        # VideoPlayer double click connection
+        # Double click connection (koristi PlayerWidget koji već radi)
+        self.player_widget.video_frame.double_clicked.connect(self.on_video_double_click)
+
         QTimer.singleShot(100, self.check_saved_playlist)
     
     def init_ui(self):
@@ -624,3 +628,15 @@ class MainWindow(QMainWindow):
         
         event.accept()
         logger.info("Application closed successfully")
+        
+    def on_video_double_click(self):
+        """Double click na video -> fullscreen toggle"""
+        if self.player_widget:
+            self.player_widget.toggle_fullscreen()
+
+    def on_video_mute_toggle(self):
+        """Mute/unmute na single klik VIDEO ZVUKA"""
+        if self.player_widget:
+            current_vol = self.player_widget.volume_slider.value()
+            new_vol = 0 if current_vol > 0 else 50
+            self.player_widget.set_volume(new_vol)
