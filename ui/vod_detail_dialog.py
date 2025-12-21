@@ -255,3 +255,19 @@ class VODDetailDialog(QDialog):
         
         # Notify parent to refresh
         self.favorite_changed.emit()
+    
+    def closeEvent(self, event):
+        """Handle dialog close event"""
+        logger.info(f"Closing VOD detail dialog: {self.vod_item.name}")
+        # Only clear reference if dialog is being explicitly closed by user
+        # Not when player is active
+        if self.parent():
+            parent = self.parent()
+            # Only clear if player is not visible (not during playback)
+            if parent.stacked_widget.currentIndex() != 0:
+                parent.current_detail_dialog = None
+            else:
+                # Ignore close event during playback
+                event.ignore()
+                return
+        super().closeEvent(event)
