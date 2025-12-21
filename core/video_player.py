@@ -88,7 +88,7 @@ class VideoPlayer(QObject):
             media.add_option("http-user-agent=VLC/3.0.0")
             media.add_option("http-referrer=http://example.com")
             
-            media.parse()
+            # media.parse()
             self.media_player.set_media(media)
             self.media_player.play()
             
@@ -112,16 +112,17 @@ class VideoPlayer(QObject):
     
     def stop(self):
         """Stop playback"""
-        logger.info(f"VideoPlayer.stop() called - media_player exists: {self.media_player is not None}")
         if self.media_player:
-            logger.info(f"Stopping media_player - is_playing: {self.media_player.is_playing()}")
-            self.media_player.stop()
-            logger.info("media_player.stop() executed")
+            try:
+                if self.media_player.is_playing():
+                    self.media_player.stop()
+            except Exception as e:
+                logger.error(f"Error while stopping media player: {e}")
         self.current_url = None
         if self.reconnect_timer:
             self.reconnect_timer.stop()
-        logger.info("Playback stopped - reconnect_timer stopped")
-    
+        logger.debug("Playback stopped")
+
     def set_volume(self, volume: int):
         """Set volume (0-100)"""
         if self.media_player:

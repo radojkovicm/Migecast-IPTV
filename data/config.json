@@ -1,7 +1,7 @@
 {
     "display": {
         "max_channels": "500",
-        "max_vod": "200"
+        "max_vod": "Sve"
     },
     "player": {
         "reconnect_attempts": 3,
