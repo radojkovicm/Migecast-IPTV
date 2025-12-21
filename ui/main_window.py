@@ -105,8 +105,27 @@ class MainWindow(QMainWindow):
         settings_btn.clicked.connect(self.show_settings)
         top_bar_layout.addWidget(settings_btn)
         
-        main_layout.addWidget(top_bar)
+        # Exit button
+        close_btn = QPushButton("❌")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16pt; 
+                padding: 8px 12px; 
+                background-color: #f44336; 
+                color: white; 
+                border: none;
+                border-radius: 5px;
+                min-width: 40px;
+            }
+            QPushButton:hover {
+                background-color: #d32f2f;
+            }
+        """)
+        close_btn.clicked.connect(self.close)
+        top_bar_layout.addWidget(close_btn)
         
+        main_layout.addWidget(top_bar)
+         
         # Stacked widget for menu and content
         self.stacked_widget = QStackedWidget()
         main_layout.addWidget(self.stacked_widget)
@@ -116,72 +135,53 @@ class MainWindow(QMainWindow):
         self.menu_page.setStyleSheet("background-color: #1e1e1e; color: white;")
         menu_layout = QVBoxLayout(self.menu_page)
         menu_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
-        menu_title = QLabel("Izaberite kategoriju")
-        menu_title.setStyleSheet("font-size: 24pt; color: white; margin-bottom: 20px;")
+
+        menu_title = QLabel("")
+        menu_title.setStyleSheet("font-size: 1pt; color: white; margin-bottom: 40px;")
         menu_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         menu_layout.addWidget(menu_title)
-        
+
         menu_layout.addStretch()
-        
-        # TV button
+
+        # zajednički stil za sva tri dugmeta
+        button_style = """
+            QPushButton {
+                font-size: 22pt;
+                min-width: 220px;
+                min-height: 220px;
+                padding: 10px;
+                background-color: #444;
+                color: white;
+                border: none;
+                border-radius: 20px;
+            }
+            QPushButton:hover {
+                background-color: #4CAF50;
+            }
+        """
+
+        # red sa dugmadima (jedno pored drugog)
+        buttons_row = QHBoxLayout()
+        buttons_row.setSpacing(40)
+
         self.tv_btn = QPushButton("📺 TV")
-        self.tv_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 18pt; 
-                padding: 15px; 
-                margin: 10px 100px; 
-                background-color: #444; 
-                color: white; 
-                border: none; 
-                border-radius: 10px;
-            }
-            QPushButton:hover {
-                background-color: #4CAF50;
-            }
-        """)
+        self.tv_btn.setStyleSheet(button_style)
         self.tv_btn.clicked.connect(lambda: self.show_category('tv'))
-        menu_layout.addWidget(self.tv_btn)
-        
-        # VOD button
+        buttons_row.addWidget(self.tv_btn)
+
         self.vod_btn = QPushButton("🎬 Filmovi")
-        self.vod_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 18pt; 
-                padding: 15px; 
-                margin: 10px 100px; 
-                background-color: #444; 
-                color: white; 
-                border: none; 
-                border-radius: 10px;
-            }
-            QPushButton:hover {
-                background-color: #4CAF50;
-            }
-        """)
+        self.vod_btn.setStyleSheet(button_style)
         self.vod_btn.clicked.connect(lambda: self.show_category('vod'))
-        menu_layout.addWidget(self.vod_btn)
-        
-        # Series button
+        buttons_row.addWidget(self.vod_btn)
+
         self.series_btn = QPushButton("📺 Serije")
-        self.series_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 18pt; 
-                padding: 15px; 
-                margin: 10px 100px; 
-                background-color: #444; 
-                color: white; 
-                border: none; 
-                border-radius: 10px;
-            }
-            QPushButton:hover {
-                background-color: #4CAF50;
-            }
-        """)
+        self.series_btn.setStyleSheet(button_style)
         self.series_btn.clicked.connect(lambda: self.show_category('series'))
-        menu_layout.addWidget(self.series_btn)
-        
+        buttons_row.addWidget(self.series_btn)
+
+        menu_layout.addLayout(buttons_row)
         menu_layout.addStretch()
+
         
         self.stacked_widget.addWidget(self.menu_page)
         
@@ -234,41 +234,40 @@ class MainWindow(QMainWindow):
         # Status bar
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("Izaberite kategoriju")
+        self.status_bar.showMessage("")
         
         logger.info("Main window initialized")
     
     def show_menu(self):
         """Show main menu"""
-        # STOP VIDEO PLAYER when returning to menu
-        if self.video_player:
-            logger.info("Stopping video player before returning to menu")
-            self.video_player.stop()
+        # Stop TV stream (ali asinhrono) - VOD/Series ne diraj
+        if self.video_player and self.current_mode == 'tv':
+            logger.info("Stopping TV stream before returning to menu (async)")
+            QTimer.singleShot(0, self.video_player.stop)
         
         self.stacked_widget.setCurrentIndex(0)
         self.back_btn.hide()
         self.breadcrumb_label.setText("Početna")
         self.current_mode = 'menu'
-        self.status_bar.showMessage("Izaberite kategoriju")
     
     def on_playback_exited(self):
         """Handle user exiting from playback - return to the detail dialog or category"""
-        logger.info(f"Playback exited - stopping player")
+        logger.info(f"Playback exited - stopping player (async)")
         
         # Exit fullscreen if still in fullscreen
         if self.player_widget.isFullScreen():
             self.player_widget.exit_fullscreen()
         
-        # Stop video player with extra delay to ensure VLC processes stop command
+        # Asinhrono stop-uj VLC player da ne blokira GUI
         if self.video_player:
-            self.video_player.stop()
+            QTimer.singleShot(0, self.video_player.stop)
         
-        # Also stop the player widget
-        self.player_widget.stop()
+        # Asinhrono stop-uj PlayerWidget
+        QTimer.singleShot(50, self.player_widget.stop)
         
         # Add small delay to ensure player stops
         QTimer.singleShot(100, self._complete_playback_exit)
-    
+
     def _complete_playback_exit(self):
         """Complete the playback exit process after player has stopped"""
         # If we have a detail dialog, bring it back to front
@@ -289,11 +288,11 @@ class MainWindow(QMainWindow):
     
     def show_category(self, mode: str):
         """Show selected category"""
-        # STOP VIDEO PLAYER when switching categories
-        if self.video_player:
-            logger.info(f"Stopping video player before switching to {mode}")
-            self.video_player.stop()
-
+        # Stop TV stream kad prelaziš na drugu kategoriju (asinhrono)
+        if self.video_player and self.current_mode == 'tv' and mode != 'tv':
+            logger.info(f"Stopping TV stream before switching to {mode} (async)")
+            QTimer.singleShot(0, self.video_player.stop)
+        
         self.stacked_widget.setCurrentIndex(1)
         self.back_btn.show()
 
@@ -353,13 +352,14 @@ class MainWindow(QMainWindow):
         """Handle ESC key - exit fullscreen, return to dialog, or go back to menu"""
         # Priority 1: Exit fullscreen if in fullscreen
         if self.player_widget.isFullScreen():
-            logger.info("ESC pressed in fullscreen - exiting fullscreen and stopping player")
+            logger.info("ESC pressed in fullscreen - exiting fullscreen and stopping player (async)")
             # Exit fullscreen
             self.player_widget.exit_fullscreen()
-            # Stop the player immediately
+            # Asinhrono stop
             if self.video_player:
-                self.video_player.stop()
-            self.player_widget.stop()
+                QTimer.singleShot(0, self.video_player.stop)
+            QTimer.singleShot(50, self.player_widget.stop)
+
             # Return to previous state
             if self.current_detail_dialog:
                 self.current_detail_dialog.setVisible(True)
@@ -513,7 +513,7 @@ class MainWindow(QMainWindow):
         # Save current mode for TV playback
         self.previous_mode = self.current_mode
         
-        self.player_widget.play_url(channel.url)
+        self.player_widget.play_url(channel.url, content_type='tv')
         self.status_bar.showMessage(f"Reprodukcija: {channel.name}")
     
     def play_vod(self, vod_item: VODItem):
@@ -541,7 +541,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(0)  # Show player
 
         # Play video
-        self.player_widget.play_url(vod_item.url)
+        self.player_widget.play_url(vod_item.url, content_type='vod')
         self.status_bar.showMessage(f"Reprodukcija: {vod_item.name}")
         self.db.mark_vod_watched(vod_item.stream_id, vod_item.name)
 
@@ -573,7 +573,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.setCurrentIndex(0)  # Show player
         
         # Play video
-        self.player_widget.play_url(episode.url)
+        self.player_widget.play_url(episode.url, content_type='series')
         self.status_bar.showMessage(f"Reprodukcija: {episode.name}")
         self.db.mark_series_watched(episode.stream_id, episode.name)
         
