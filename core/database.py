@@ -4,6 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from pathlib import Path
+from sqlalchemy.pool import StaticPool
 
 logger = logging.getLogger(__name__)
 
@@ -194,8 +195,13 @@ class Database:
         Path("data").mkdir(exist_ok=True)
         
         self.db_path = "data/migecast.db"
-        self.engine = create_engine(f'sqlite:///{self.db_path}')
+        self.engine = create_engine(
+            f'sqlite:///{self.db_path}',
+            connect_args={'check_same_thread': False},
+            poolclass=StaticPool
+        )
         Base.metadata.create_all(self.engine)
+
         
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
