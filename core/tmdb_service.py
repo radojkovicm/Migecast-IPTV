@@ -3,21 +3,22 @@ import requests
 from typing import Optional, Dict, List
 from core.database import Database
 from models.vod_item import VODItem
+from utils.security import SecurityManager
 
 logger = logging.getLogger(__name__)
 
-# TMDB API Key (besplatno, 1000 zahteva/dan)
-# Registruj se na https://www.themoviedb.org/settings/api
-TMDB_API_KEY = "b08657037afffede316abcf164cee9f1"  # Replace with your API key
+# TMDB Configuration
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p/w500"
 
 
 class TMDBService:
     """TMDB API service with database caching"""
-    
+
     def __init__(self):
         self.db = Database()
+        self.security = SecurityManager()
+        self.api_key = self.security.get_tmdb_api_key()
         self.session = requests.Session()
         self.session.headers.update({
             'Accept': 'application/json',
@@ -34,7 +35,7 @@ class TMDBService:
             clean_title = self._clean_title(title)
             
             params = {
-                'api_key': TMDB_API_KEY,
+                'api_key': self.api_key,
                 'query': clean_title,
                 'language': 'sr'  # Serbian language
             }
@@ -67,7 +68,7 @@ class TMDBService:
         """Get detailed movie info including cast and crew"""
         try:
             params = {
-                'api_key': TMDB_API_KEY,
+                'api_key': self.api_key,
                 'language': 'sr',
                 'append_to_response': 'credits'
             }

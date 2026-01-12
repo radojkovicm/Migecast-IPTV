@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSli
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint
 from PyQt6.QtGui import QKeyEvent, QMouseEvent, QCursor
 from core.video_player import VideoPlayer
+from core.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -388,11 +389,19 @@ class PlayerWidget(QWidget):
     def __init__(self, video_player: VideoPlayer, parent=None):
         super().__init__(parent)
         self.video_player = video_player
+        self.db = Database()  # NOVO - database za Continue Watching
         self.is_fullscreen = False
         self.is_playing = False
         self.fullscreen_window = None
         self.content_type = 'vod'
-        
+
+        # NOVO - Tracking za Continue Watching
+        self.current_stream_id = None
+        self.current_stream_title = None
+        self.progress_save_timer = QTimer()
+        self.progress_save_timer.timeout.connect(self._save_watch_progress)
+        self.progress_save_timer.setInterval(10000)  # Čuva svakih 10 sekundi
+
         self.position_timer = QTimer()
         self.position_timer.timeout.connect(self.update_position)
         self.position_timer.setInterval(200)
@@ -870,15 +879,26 @@ class PlayerWidget(QWidget):
             self.exit_fullscreen()
             self.playback_exited.emit()
     
-    def play_url(self, url: str, content_type: str = 'vod', next_episode_info: dict = None, content_title: str = None):
+    def play_url(self, url: str, content_type: str = 'vod', next_episode_info: dict = None, content_title: str = None, stream_id: str = None, resume_position: int = None):
         """
         Play URL with specified content type
-        
+
         Args:
             url: Media URL to play
             content_type: 'tv', 'vod', or 'series' - determines ESC behavior in fullscreen
+            content_title: Title for display
+            stream_id: Unique ID for Continue Watching tracking
+            resume_position: Position in seconds to resume playback from
         """
         self.current_content_title = content_title or ""
+
+        # NOVO - Store stream info for Continue Watching
+        self.current_stream_id = stream_id or url  # Fallback to URL if no ID
+        self.current_stream_title = content_title or "Unknown"
+
+        # Store resume position for seeking after media is loaded
+        self.resume_position_seconds = resume_position
+
         # Postavi referencu ka MainWindow (za volume klik)
         if self.parent() and hasattr(self.parent(), 'on_video_mute_toggle'):
             self.main_window = self.parent()
@@ -887,12 +907,12 @@ class PlayerWidget(QWidget):
             logger.warning("play_url called with empty URL")
             self.status_label.setText("Greška: Nema URL-a")
             return
-        
+
         # Store next episode info for auto-play
         self.next_episode_info = next_episode_info
         self.autoplay_triggered = False
         self.user_stopped = False  # Reset flag when starting new playback
-        
+
         # Store content type for ESC handling
         self.content_type = content_type
         logger.info(f"▶️ Playing URL with content_type: '{self.content_type}'")
@@ -918,6 +938,12 @@ class PlayerWidget(QWidget):
             self.fullscreen_controls.set_playing(True)
             self.status_label.setText("Reprodukcija...")
             self.position_timer.start()
+
+            # NOVO - Pokreni tracking za Continue Watching
+            if content_type in ['vod', 'series'] and self.current_stream_id:
+                self.progress_save_timer.start()
+                logger.info(f"Continue Watching tracking started for: {self.current_stream_title}")
+
             # Start end detection for series with next episode
             if content_type == 'series' and next_episode_info:
                 logger.info(f"Starting end_detection_timer for series: {next_episode_info.get('title')}")
@@ -967,6 +993,11 @@ class PlayerWidget(QWidget):
     def stop(self):
         try:
             logger.info("⏹ Stopping playback")
+
+            # NOVO - Sačuvaj progress pre stopiranja
+            self._save_watch_progress()
+            self.progress_save_timer.stop()
+
             self.video_player.stop()
             self.is_playing = False
             self.play_btn.setText("▶")
@@ -975,7 +1006,7 @@ class PlayerWidget(QWidget):
             self.position_timer.stop()
             self.timeline_slider.setValue(0)
             self.time_label.setText("00:00")
-            
+
             # Stop auto-play timers and clear next episode info
             self.end_detection_timer.stop()
             if self.autoplay_overlay:
@@ -983,7 +1014,7 @@ class PlayerWidget(QWidget):
             self.autoplay_triggered = False
             self.next_episode_info = None  # Clear next episode to prevent auto-play
             logger.debug("Cleared next_episode_info to prevent auto-play after stop")
-            
+
         except Exception as e:
             logger.error(f"Error stopping player: {e}", exc_info=True)
     def set_volume(self, volume: int):
@@ -1186,7 +1217,17 @@ class PlayerWidget(QWidget):
     def _on_video_state_changed(self, state: str):
         """Handle VLC video state changes"""
         logger.info(f"Video state changed: {state}")
-        
+
+        # Handle resume playback when media starts playing
+        if state == 'playing' and hasattr(self, 'resume_position_seconds') and self.resume_position_seconds:
+            # Seek to resume position
+            logger.info(f"Seeking to resume position: {self.resume_position_seconds}s")
+            # Schedule seek after a delay to ensure media is fully loaded
+            resume_pos = self.resume_position_seconds
+            QTimer.singleShot(2000, lambda: self._seek_to_position(resume_pos))
+            # Clear resume position so it doesn't trigger again
+            self.resume_position_seconds = None
+
         # Only auto-play if:
         # 1. Video naturally finished (stopped state)
         # 2. Next episode info is available
@@ -1268,3 +1309,64 @@ class PlayerWidget(QWidget):
     def _hide_title_overlay(self):
         if hasattr(self, 'title_overlay'):
             self.title_overlay.hide()
+    # ============================================================
+    # CONTINUE WATCHING - Watch Progress Tracking
+    # ============================================================
+
+    def _save_watch_progress(self):
+        """Čuva trenutnu poziciju za Continue Watching"""
+        if not self.current_stream_id or not self.is_playing:
+            return
+
+        try:
+            # Use media_player directly (not video_player wrapper)
+            if not self.video_player.media_player:
+                return
+
+            current_time = self.video_player.media_player.get_time() // 1000  # Milisekunde -> sekunde
+            duration = self.video_player.media_player.get_length() // 1000
+
+            if duration <= 0:
+                return  # Nema trajanje još
+
+            # Sačuvaj u bazu
+            success = self.db.update_watch_progress(
+                stream_id=self.current_stream_id,
+                content_type=self.content_type,
+                name=self.current_stream_title,
+                position_seconds=current_time,
+                duration_seconds=duration
+            )
+
+            if success:
+                logger.info(f"✅ Continue Watching saved: {self.current_stream_title} @ {current_time}s/{duration}s (stream_id={self.current_stream_id})")
+            else:
+                logger.error(f"❌ Failed to save Continue Watching for {self.current_stream_title}")
+        except Exception as e:
+            logger.error(f"Failed to save watch progress: {e}")
+
+    def play_from_position(self, position_seconds: int):
+        """Pokreni video sa određene pozicije (za Resume funkcionalnost)"""
+        if not self.is_playing:
+            logger.warning("play_from_position called but video not playing")
+            return
+
+        try:
+            # Čekaj da video bude spreman
+            QTimer.singleShot(500, lambda: self._seek_to_position(position_seconds))
+            logger.info(f"Resume playback from {position_seconds}s")
+        except Exception as e:
+            logger.error(f"Failed to resume from position: {e}")
+
+    def _seek_to_position(self, position_seconds: int):
+        """Helper za seek na poziciju"""
+        try:
+            if not self.video_player or not self.video_player.media_player:
+                logger.warning("media_player not available for seek")
+                return
+
+            position_ms = position_seconds * 1000
+            self.video_player.media_player.set_time(position_ms)
+            logger.info(f"Seeked to {position_seconds}s ({position_ms}ms)")
+        except Exception as e:
+            logger.error(f"Seek failed: {e}", exc_info=True)

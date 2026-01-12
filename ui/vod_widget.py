@@ -334,16 +334,17 @@ class VODWidget(QWidget):
         # Populate category combo
         self.category_combo.blockSignals(True)
         self.category_combo.clear()
+        self.category_combo.addItem("▶ Nastavi Gledanje")
         self.category_combo.addItem("⭐ Favoriti")
         self.category_combo.addItem("🎬 Svi Filmovi")
         for category in sorted(categories):
             self.category_combo.addItem(category)
-        
-        # Set default category
+
+        # Set default category - always Favoriti
         if self.favorite_ids:
-            self.category_combo.setCurrentIndex(0)
+            self.category_combo.setCurrentIndex(1)  # Favoriti
         else:
-            self.category_combo.setCurrentIndex(1)
+            self.category_combo.setCurrentIndex(2)  # Svi Filmovi
         
         self.category_combo.blockSignals(False)
         
@@ -365,23 +366,42 @@ class VODWidget(QWidget):
         """Filter VOD items based on search and category"""
         search_text = self.search_input.text().lower().strip()
         selected_category = self.category_combo.currentText()
-        
+
         # Filter items
         self.filtered_items = []
-        for item in self.vod_items:
-            # Category filter
-            if selected_category == "⭐ Favoriti":
-                if item.stream_id not in self.favorite_ids:
+
+        # Special handling for Continue Watching
+        if selected_category == "▶ Nastavi Gledanje":
+            # Get continue watching items from database
+            continue_watching_items = self.db.get_continue_watching(limit=50)
+
+            # Map stream IDs to VOD items (ensure both are strings for comparison)
+            continue_watching_ids = {str(item.stream_id) for item in continue_watching_items}
+
+            for item in self.vod_items:
+                # Check if this VOD item is in continue watching
+                if str(item.stream_id) in continue_watching_ids:
+                    # Search filter
+                    if search_text and search_text not in item.name.lower():
+                        continue
+                    self.filtered_items.append(item)
+
+        else:
+            # Regular filtering
+            for item in self.vod_items:
+                # Category filter
+                if selected_category == "⭐ Favoriti":
+                    if item.stream_id not in self.favorite_ids:
+                        continue
+                elif selected_category != "🎬 Svi Filmovi":
+                    if item.category != selected_category:
+                        continue
+
+                # Search filter
+                if search_text and search_text not in item.name.lower():
                     continue
-            elif selected_category != "🎬 Svi Filmovi":
-                if item.category != selected_category:
-                    continue
-            
-            # Search filter
-            if search_text and search_text not in item.name.lower():
-                continue
-            
-            self.filtered_items.append(item)
+
+                self.filtered_items.append(item)
         
         # Reset pagination
         self.current_page = 0

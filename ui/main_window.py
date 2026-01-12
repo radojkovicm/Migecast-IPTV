@@ -9,6 +9,9 @@ from ui.settings_dialog import SettingsDialog
 from models.channel import Channel
 from models.vod_item import VODItem
 from models.series_item import SeriesItem
+from utils.themes import generate_stylesheet
+from utils.config import Config
+from utils.error_messages import get_user_friendly_error
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +48,9 @@ class MainWindow(QMainWindow):
         # VideoPlayer double click connection
         # Double click connection (koristi PlayerWidget koji već radi)
         self.player_widget.video_frame.double_clicked.connect(self.on_video_double_click)
+
+        # Apply saved theme settings
+        self.apply_theme()
 
         QTimer.singleShot(100, self.check_saved_playlist)
     
@@ -112,7 +118,7 @@ class MainWindow(QMainWindow):
         """)
         settings_btn.clicked.connect(self.show_settings)
         top_bar_layout.addWidget(settings_btn)
-        
+
         # Exit button
         close_btn = QPushButton("❌")
         close_btn.setStyleSheet("""
@@ -284,6 +290,13 @@ class MainWindow(QMainWindow):
             logger.info("Returning to detail dialog")
             # Return to category view to show the dialog properly
             self.stacked_widget.setCurrentIndex(1)
+
+            # Refresh buttons/episodes to show updated watch progress
+            if hasattr(self.current_detail_dialog, 'refresh_buttons'):
+                self.current_detail_dialog.refresh_buttons()  # VOD dialog
+            elif hasattr(self.current_detail_dialog, 'refresh_episodes'):
+                self.current_detail_dialog.refresh_episodes()  # Series dialog
+
             # Ensure dialog is visible and on top
             self.current_detail_dialog.setVisible(True)
             self.current_detail_dialog.show()
@@ -316,7 +329,7 @@ class MainWindow(QMainWindow):
             self.breadcrumb_label.setText("Početna > 📺 Serije")
 
         self.current_mode = mode
-        self.status_bar.showMessage(f"Kategorija: {mode}")
+        # self.status_bar.showMessage(f"Kategorija: {mode}")
     
     def update_menu_counts(self):
         """Update menu buttons with item counts"""
@@ -398,7 +411,7 @@ class MainWindow(QMainWindow):
         if saved_playlist:
             playlist_name = saved_playlist.get('name', 'Unknown')
             logger.info(f"Loading saved playlist: {playlist_name}")
-            self.status_bar.showMessage(f"Učitavanje liste: {playlist_name}...")
+            # self.status_bar.showMessage(f"Učitavanje liste: {playlist_name}...")
             QTimer.singleShot(100, lambda: self.load_saved_playlist(saved_playlist))
         else:
             QTimer.singleShot(500, self.show_welcome_dialog)
@@ -431,7 +444,7 @@ class MainWindow(QMainWindow):
             
             if not channels and not vod_items and not series_items:
                 logger.warning("Playlist loaded but contains no data")
-                self.status_bar.showMessage("Lista je prazna ili nije mogla biti učitana")
+                # self.status_bar.showMessage("Lista je prazna ili nije mogla biti učitana")
                 QTimer.singleShot(2000, self.show_welcome_dialog)
                 return
             
@@ -451,7 +464,7 @@ class MainWindow(QMainWindow):
             status_msg = f"Lista učitana: {len(channels)} kanala, {len(vod_items)} filmova, {len(series_items)} serija"
             if force_refresh:
                 status_msg += " (osveženo)"
-            self.status_bar.showMessage(status_msg)
+            # self.status_bar.showMessage(status_msg)
             
             logger.info(f"Successfully loaded playlist with {len(channels)} channels, {len(vod_items)} VOD items, {len(series_items)} series (force_refresh={force_refresh})")
             
@@ -460,7 +473,7 @@ class MainWindow(QMainWindow):
             
         except Exception as e:
             logger.error(f"Failed to load saved playlist: {e}", exc_info=True)
-            self.status_bar.showMessage("Greška pri učitavanju liste")
+            # self.status_bar.showMessage("Greška pri učitavanju liste")
             QMessageBox.warning(self, "Greška", f"Greška pri učitavanju liste:\n{str(e)}")
             QTimer.singleShot(2000, self.show_welcome_dialog)
     
@@ -483,8 +496,26 @@ class MainWindow(QMainWindow):
             logger.info(f"Settings dialog closed with result: {result}")
         except Exception as e:
             logger.error(f"Error showing settings dialog: {e}", exc_info=True)
-            QMessageBox.critical(self, "Greška", f"Greška pri otvaranju podešavanja:\n{str(e)}")
-    
+            error_msg = get_user_friendly_error(e, 'general')
+            QMessageBox.critical(self, "Greška", f"Greška pri otvaranju podešavanja:\n\n{error_msg}")
+
+    def apply_theme(self):
+        """Apply current theme settings"""
+        try:
+            config = Config()
+            theme_name = config.get('appearance', 'theme', 'dark')
+            font_size = 16  # Fixed font size
+
+            logger.info(f"Applying theme: {theme_name}")
+
+            # Generate and apply stylesheet
+            stylesheet = generate_stylesheet(theme_name, font_size)
+            self.setStyleSheet(stylesheet)
+
+            logger.info("Theme applied successfully")
+        except Exception as e:
+            logger.error(f"Error applying theme: {e}", exc_info=True)
+
     def on_playlist_added(self, channels: list, vod_items: list, series_items: list):
         """Handle new playlist added from settings"""
         self.current_playlist_data = {
@@ -499,8 +530,8 @@ class MainWindow(QMainWindow):
         
         # Update menu button counts
         self.update_menu_counts()
-        
-        self.status_bar.showMessage(f"Lista učitana: {len(channels)} kanala, {len(vod_items)} filmova, {len(series_items)} serija")
+
+        # self.status_bar.showMessage(f"Lista učitana: {len(channels)} kanala, {len(vod_items)} filmova, {len(series_items)} serija")
         
         # Show menu after adding playlist
         self.show_menu()
@@ -510,7 +541,7 @@ class MainWindow(QMainWindow):
         saved_playlist = self.db.get_last_playlist()
         if saved_playlist:
             logger.info("Refreshing playlist...")
-            self.status_bar.showMessage("Osvežavanje liste...")
+            # self.status_bar.showMessage("Osvežavanje liste...")
             QTimer.singleShot(100, lambda: self.load_saved_playlist(saved_playlist, force_refresh=True))
         else:
             QMessageBox.warning(self, "Greška", "Nema aktivne playliste za osvežavanje.")
@@ -523,40 +554,59 @@ class MainWindow(QMainWindow):
         self.previous_mode = self.current_mode
         
         self.player_widget.play_url(channel.url, content_type='tv', content_title=channel.name)
-        self.status_bar.showMessage(f"Reprodukcija: {channel.name}")
+        # self.status_bar.showMessage(f"Reprodukcija: {channel.name}")
     
     def play_vod(self, vod_item: VODItem):
         """Play selected VOD item - show detail dialog"""
         logger.info(f"Opening VOD detail: {vod_item.name}")
         
         from ui.vod_detail_dialog import VODDetailDialog
-        
+
         dialog = VODDetailDialog(vod_item, self.vod_widget.image_cache, self.db, self)
         dialog.play_clicked.connect(lambda: self.start_vod_playback(vod_item, dialog))
+        dialog.resume_clicked.connect(lambda pos: self.resume_vod_playback(vod_item, pos, dialog))
         dialog.favorite_changed.connect(self.vod_widget.refresh_favorites)
-        
+
         # Save dialog reference and show as modeless (non-blocking) dialog
         self.current_detail_dialog = dialog
         dialog.show()
     
     def start_vod_playback(self, vod_item: VODItem, dialog=None):
-        """Start VOD playback"""
+        """Start VOD playback from beginning"""
         logger.info(f"Playing VOD: {vod_item.name}")
 
         # Save current mode at the moment when user clicks Play
         self.previous_mode = self.current_mode
-        
+
         # Switch to player widget
         self.stacked_widget.setCurrentIndex(0)  # Show player
 
         # Play video
-        self.player_widget.play_url(vod_item.url, content_type='vod', content_title=vod_item.name)
-        self.status_bar.showMessage(f"Reprodukcija: {vod_item.name}")
+        self.player_widget.play_url(vod_item.url, content_type='vod', content_title=vod_item.name, stream_id=str(vod_item.stream_id))
+        # self.status_bar.showMessage(f"Reprodukcija: {vod_item.name}")
         self.db.mark_vod_watched(vod_item.stream_id, vod_item.name)
 
         # Enter fullscreen automatically after short delay
         QTimer.singleShot(500, self.player_widget.enter_fullscreen)
-    
+
+    def resume_vod_playback(self, vod_item: VODItem, position_seconds: int, dialog=None):
+        """Resume VOD playback from saved position"""
+        logger.info(f"Resuming VOD: {vod_item.name} from {position_seconds}s")
+
+        # Save current mode
+        self.previous_mode = self.current_mode
+
+        # Switch to player widget
+        self.stacked_widget.setCurrentIndex(0)
+
+        # Play video and seek to saved position
+        self.player_widget.play_url(vod_item.url, content_type='vod', content_title=vod_item.name, stream_id=str(vod_item.stream_id), resume_position=position_seconds)
+        # self.status_bar.showMessage(f"Nastavljam: {vod_item.name}")
+        self.db.mark_vod_watched(vod_item.stream_id, vod_item.name)
+
+        # Enter fullscreen automatically after seek completes (2.5s to allow for 2s seek delay)
+        QTimer.singleShot(2500, self.player_widget.enter_fullscreen)
+
     def play_series(self, series_name: str, episodes: list):
         """Play selected series - show season/episode selection dialog"""
         logger.info(f"Opening series detail: {series_name}")
@@ -566,11 +616,12 @@ class MainWindow(QMainWindow):
             key=lambda x: (int(x.season or 0), int(x.episode or 0))
         )
         from ui.series_detail_dialog import SeriesDetailDialog
-        
+
         dialog = SeriesDetailDialog(series_name, episodes, self.series_widget.image_cache, self.db, self)
         dialog.play_episode_clicked.connect(lambda ep: self.start_series_playback(ep, dialog))
+        dialog.resume_episode_clicked.connect(lambda ep, pos: self.resume_series_playback(ep, pos, dialog))
         dialog.favorite_changed.connect(self.series_widget.refresh_favorites)
-        
+
         # Save dialog reference and show as modeless (non-blocking) dialog
         self.current_detail_dialog = dialog
         dialog.show()
@@ -621,12 +672,65 @@ class MainWindow(QMainWindow):
         
         # Play video with next episode info
         series_title = f"{self.current_series.name} - {episode.name}" if hasattr(self, 'current_series') else episode.name
-        self.player_widget.play_url(episode.url, content_type='series', next_episode_info=next_episode_info, content_title=series_title)
-        self.status_bar.showMessage(f"Reprodukcija: {episode.name}")
+        self.player_widget.play_url(episode.url, content_type='series', next_episode_info=next_episode_info, content_title=series_title, stream_id=str(episode.stream_id))
+        # self.status_bar.showMessage(f"Reprodukcija: {episode.name}")
         self.db.mark_series_watched(episode.stream_id, episode.name)
-        
+
         # Enter fullscreen automatically
         QTimer.singleShot(500, self.player_widget.enter_fullscreen)
+
+    def resume_series_playback(self, episode: SeriesItem, position_seconds: int, dialog=None):
+        """Resume series episode playback from saved position"""
+        logger.info(f"Resuming series episode: {episode.name} from {position_seconds}s")
+        logger.info(f"Current series episodes count: {len(self.current_series_episodes) if self.current_series_episodes else 0}")
+
+        # Save current mode
+        self.previous_mode = self.current_mode
+
+        # Find current episode in the list and get next episode info
+        if self.current_series_episodes:
+            try:
+                # Find current episode index
+                self.current_episode_index = next(
+                    (i for i, ep in enumerate(self.current_series_episodes) if ep.stream_id == episode.stream_id),
+                    -1
+                )
+                logger.info(f"Current episode index: {self.current_episode_index}")
+
+                # Get next episode info (if exists)
+                next_episode_info = None
+                if self.current_episode_index >= 0 and self.current_episode_index < len(self.current_series_episodes) - 1:
+                    next_ep = self.current_series_episodes[self.current_episode_index + 1]
+                    next_episode_info = {
+                        'title': next_ep.name,
+                        'url': next_ep.url,
+                        'stream_id': next_ep.stream_id,
+                        'season': next_ep.season,
+                        'episode': next_ep.episode
+                    }
+                    logger.info(f"Next episode available: {next_ep.name}")
+                else:
+                    logger.info("This is the last episode")
+
+            except Exception as e:
+                logger.error(f"Error finding next episode: {e}")
+                next_episode_info = None
+        else:
+            logger.warning("No current_series_episodes set")
+            next_episode_info = None
+
+        # Switch to player widget
+        self.stacked_widget.setCurrentIndex(0)
+        logger.info(f"Resuming with auto-play info: {next_episode_info}")
+
+        # Play video with next episode info and resume position
+        series_title = f"{self.current_series.name} - {episode.name}" if hasattr(self, 'current_series') else episode.name
+        self.player_widget.play_url(episode.url, content_type='series', next_episode_info=next_episode_info, content_title=series_title, stream_id=str(episode.stream_id), resume_position=position_seconds)
+        # self.status_bar.showMessage(f"Nastavljam: {episode.name}")
+        self.db.mark_series_watched(episode.stream_id, episode.name)
+
+        # Enter fullscreen automatically after seek completes (2.5s to allow for 2s seek delay)
+        QTimer.singleShot(2500, self.player_widget.enter_fullscreen)
     
     def play_next(self):
         """Play next channel/item"""
@@ -658,7 +762,7 @@ class MainWindow(QMainWindow):
             self.start_series_playback(next_episode)
         else:
             logger.info("No more episodes - staying on last episode")
-            self.status_bar.showMessage("Nema više epizoda u sezoni")
+            # self.status_bar.showMessage("Nema više epizoda u sezoni")
     
     def closeEvent(self, event):
         """Handle window close event"""
