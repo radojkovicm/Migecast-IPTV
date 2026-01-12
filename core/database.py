@@ -1,10 +1,11 @@
 import logging
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, Float
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime, Text, Float, Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from pathlib import Path
 from sqlalchemy.pool import StaticPool
+from utils.security import SecurityManager
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +56,15 @@ class WatchedSeries(Base):
 class WatchedVOD(Base):
     """Watched VOD items table"""
     __tablename__ = 'watched_vod'
-    
+
     id = Column(Integer, primary_key=True)
     stream_id = Column(String, unique=True, nullable=False)
     name = Column(String)
     watched_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        Index('idx_watched_vod_time', 'watched_at'),
+    )
 
 
 class SavedPlaylist(Base):
@@ -86,7 +91,7 @@ class SavedPlaylist(Base):
 class CachedChannel(Base):
     """Cached channels from playlist"""
     __tablename__ = 'cached_channels'
-    
+
     id = Column(Integer, primary_key=True)
     channel_id = Column(String, nullable=False)
     name = Column(String)
@@ -95,11 +100,17 @@ class CachedChannel(Base):
     category = Column(String)
     playlist_id = Column(Integer, nullable=False)  # Link to SavedPlaylist
 
+    __table_args__ = (
+        Index('idx_channel_playlist', 'playlist_id'),
+        Index('idx_channel_category', 'category'),
+        Index('idx_channel_name', 'name'),
+    )
+
 
 class CachedVOD(Base):
     """Cached VOD items from playlist"""
     __tablename__ = 'cached_vod'
-    
+
     id = Column(Integer, primary_key=True)
     stream_id = Column(String, nullable=False)
     name = Column(String)
@@ -115,11 +126,17 @@ class CachedVOD(Base):
     category = Column(String)
     playlist_id = Column(Integer, nullable=False)
 
+    __table_args__ = (
+        Index('idx_vod_playlist', 'playlist_id'),
+        Index('idx_vod_category', 'category'),
+        Index('idx_vod_name', 'name'),
+    )
+
 
 class CachedSeries(Base):
     """Cached Series from playlist"""
     __tablename__ = 'cached_series'
-    
+
     id = Column(Integer, primary_key=True)
     stream_id = Column(String, nullable=False)
     name = Column(String)
@@ -135,6 +152,12 @@ class CachedSeries(Base):
     season = Column(String)
     episode = Column(String)
     playlist_id = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        Index('idx_series_playlist', 'playlist_id'),
+        Index('idx_series_category', 'category'),
+        Index('idx_series_name', 'name'),
+    )
 
 
 class TMDBCache(Base):
@@ -174,6 +197,32 @@ class TMDBCache(Base):
         }
 
 
+class WatchProgress(Base):
+    """Watch progress for Continue Watching feature"""
+    __tablename__ = 'watch_progress'
+
+    id = Column(Integer, primary_key=True)
+    stream_id = Column(String, unique=True, nullable=False)
+    content_type = Column(String, nullable=False)  # 'vod' or 'series'
+    name = Column(String)
+    position_seconds = Column(Integer, default=0)  # Current playback position
+    duration_seconds = Column(Integer, default=0)  # Total duration
+    last_watched = Column(DateTime, default=datetime.now)
+    completed = Column(Boolean, default=False)  # True if > 90% watched
+
+    __table_args__ = (
+        Index('idx_watch_progress_time', 'last_watched'),
+        Index('idx_watch_progress_type', 'content_type'),
+    )
+
+    @property
+    def progress_percent(self):
+        """Calculate progress percentage"""
+        if self.duration_seconds > 0:
+            return int((self.position_seconds / self.duration_seconds) * 100)
+        return 0
+
+
 class Database:
     """Database manager with singleton pattern"""
     
@@ -188,12 +237,15 @@ class Database:
     def __init__(self):
         if self._initialized:
             return
-        
+
         self._initialized = True
-        
+
         # Ensure data directory exists
         Path("data").mkdir(exist_ok=True)
-        
+
+        # Initialize security manager for encryption
+        self.security = SecurityManager()
+
         self.db_path = "data/migecast.db"
         self.engine = create_engine(
             f'sqlite:///{self.db_path}',
@@ -202,10 +254,13 @@ class Database:
         )
         Base.metadata.create_all(self.engine)
 
-        
+
         Session = sessionmaker(bind=self.engine)
         self.session = Session()
-        
+
+        # Migrate existing passwords to encrypted format
+        self._migrate_passwords()
+
         logger.info(f"Database initialized (Singleton): {self.db_path}")
     
     # ============================================================
@@ -431,13 +486,16 @@ class Database:
     # SAVED PLAYLISTS
     # ============================================================
     
-    def save_playlist(self, name: str, playlist_type: str, url: str = "", 
+    def save_playlist(self, name: str, playlist_type: str, url: str = "",
                      server: str = "", username: str = "", password: str = ""):
         """Save playlist to database"""
         try:
+            # Encrypt password if provided
+            encrypted_password = self._encrypt_password_if_needed(password)
+
             # Deactivate all other playlists
             self.session.query(SavedPlaylist).update({SavedPlaylist.is_active: False})
-            
+
             # Check if playlist already exists
             existing = None
             if playlist_type == 'M3U' and url:
@@ -446,10 +504,11 @@ class Database:
                 existing = self.session.query(SavedPlaylist).filter_by(
                     type='Xtream', server=server, username=username
                 ).first()
-            
+
             if existing:
                 # Update existing
                 existing.name = name
+                existing.password = encrypted_password  # Update encrypted password
                 existing.is_active = True
                 existing.last_loaded = datetime.now()
                 playlist_id = existing.id
@@ -461,14 +520,14 @@ class Database:
                     url=url,
                     server=server,
                     username=username,
-                    password=password,
+                    password=encrypted_password,  # Save encrypted password
                     is_active=True,
                     last_loaded=datetime.now()
                 )
                 self.session.add(playlist)
                 self.session.flush()  # Get ID
                 playlist_id = playlist.id
-            
+
             self.session.commit()
             logger.info(f"Saved playlist: {name} (ID: {playlist_id})")
             return playlist_id
@@ -488,7 +547,7 @@ class Database:
                 'url': playlist.url,
                 'server': playlist.server,
                 'username': playlist.username,
-                'password': playlist.password,
+                'password': self._decrypt_password(playlist.password),  # Decrypt password
                 'last_refreshed': playlist.last_refreshed
             }
         return None
@@ -724,3 +783,143 @@ class Database:
         except Exception as e:
             logger.error(f"Failed to fetch all TMDB cache: {e}")
             return {}
+    # ============================================================
+    # PASSWORD ENCRYPTION/DECRYPTION
+    # ============================================================
+
+    def _migrate_passwords(self):
+        """Migrate existing plaintext passwords to encrypted format"""
+        try:
+            playlists = self.session.query(SavedPlaylist).all()
+            for playlist in playlists:
+                if playlist.password and not self.security.is_encrypted(playlist.password):
+                    # Encrypt plaintext password
+                    playlist.password = self.security.encrypt_password(playlist.password)
+                    logger.info(f"Migrated password for playlist: {playlist.name}")
+            self.session.commit()
+        except Exception as e:
+            logger.error(f"Password migration failed: {e}")
+            self.session.rollback()
+
+    def _encrypt_password_if_needed(self, password: str) -> str:
+        """Encrypt password if not already encrypted"""
+        if not password:
+            return ""
+        if self.security.is_encrypted(password):
+            return password
+        return self.security.encrypt_password(password)
+
+    def _decrypt_password(self, encrypted_password: str) -> str:
+        """Decrypt password for use"""
+        return self.security.decrypt_password(encrypted_password)
+
+    # ============================================================
+    # WATCH PROGRESS (Continue Watching)
+    # ============================================================
+
+    def update_watch_progress(self, stream_id: str, content_type: str, name: str,
+                              position_seconds: int, duration_seconds: int):
+        """Update watch progress for Continue Watching"""
+        try:
+            # Calculate if completed (>90%)
+            completed = False
+            if duration_seconds > 0:
+                progress_percent = (position_seconds / duration_seconds) * 100
+                completed = progress_percent > 90
+
+            progress = self.session.query(WatchProgress).filter_by(stream_id=stream_id).first()
+
+            if progress:
+                # Update existing
+                progress.position_seconds = position_seconds
+                progress.duration_seconds = duration_seconds
+                progress.last_watched = datetime.now()
+                progress.completed = completed
+            else:
+                # Create new
+                progress = WatchProgress(
+                    stream_id=stream_id,
+                    content_type=content_type,
+                    name=name,
+                    position_seconds=position_seconds,
+                    duration_seconds=duration_seconds,
+                    completed=completed
+                )
+                self.session.add(progress)
+
+            self.session.commit()
+            return True
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to update watch progress: {e}")
+            return False
+
+    def get_watch_progress(self, stream_id: str):
+        """Get watch progress for a stream"""
+        try:
+            return self.session.query(WatchProgress).filter_by(stream_id=stream_id).first()
+        except Exception as e:
+            logger.error(f"Failed to get watch progress: {e}")
+            return None
+
+    def mark_watch_progress_completed(self, stream_id: str):
+        """Mark watch progress as completed (removes from Continue Watching)"""
+        try:
+            progress = self.session.query(WatchProgress).filter_by(stream_id=stream_id).first()
+            if progress:
+                progress.completed = True
+                progress.last_watched = datetime.now()
+                self.session.commit()
+                logger.info(f"Marked as completed: {stream_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Failed to mark as completed: {e}")
+            self.session.rollback()
+            return False
+
+    def get_continue_watching(self, limit: int = 10):
+        """
+        Get recent incomplete items for Continue Watching
+
+        Rules:
+        - Only show items watched 5-90% (not too little, not too much)
+        - Sort by most recently watched
+        - Each stream_id appears only once
+        """
+        try:
+            # Get all watch progress items
+            all_progress = self.session.query(WatchProgress).filter_by(
+                completed=False
+            ).all()
+
+            # Filter by 5-90% rule
+            valid_items = []
+            for progress in all_progress:
+                if progress.duration_seconds > 0:
+                    percent = (progress.position_seconds / progress.duration_seconds) * 100
+                    # Only show if watched 5-90%
+                    if 5 <= percent <= 90:
+                        valid_items.append(progress)
+
+            # Sort by most recent
+            valid_items.sort(key=lambda x: x.last_watched, reverse=True)
+
+            # Return limited number
+            return valid_items[:limit]
+        except Exception as e:
+            logger.error(f"Failed to get continue watching: {e}")
+            return []
+
+    def delete_watch_progress(self, stream_id: str):
+        """Delete watch progress"""
+        try:
+            progress = self.session.query(WatchProgress).filter_by(stream_id=stream_id).first()
+            if progress:
+                self.session.delete(progress)
+                self.session.commit()
+                return True
+        except Exception as e:
+            self.session.rollback()
+            logger.error(f"Failed to delete watch progress: {e}")
+        return False

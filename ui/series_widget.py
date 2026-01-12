@@ -340,16 +340,17 @@ class SeriesWidget(QWidget):
         # Populate category combo
         self.category_combo.blockSignals(True)
         self.category_combo.clear()
+        self.category_combo.addItem("▶ Nastavi Gledanje")
         self.category_combo.addItem("⭐ Favoriti")
         self.category_combo.addItem("📺 Sve Serije")
         for category in sorted(categories):
             self.category_combo.addItem(category)
-        
-        # Set default category
+
+        # Set default category - always Favoriti
         if self.favorite_ids:
-            self.category_combo.setCurrentIndex(0)
+            self.category_combo.setCurrentIndex(1)  # Favoriti
         else:
-            self.category_combo.setCurrentIndex(1)
+            self.category_combo.setCurrentIndex(2)  # Sve Serije
         
         self.category_combo.blockSignals(False)
         
@@ -371,27 +372,59 @@ class SeriesWidget(QWidget):
         """Filter series based on search and category"""
         search_text = self.search_input.text().lower().strip()
         selected_category = self.category_combo.currentText()
-        
+
         # Get favorite series
         favorite_series = set(self.favorite_ids)
-        
+
         # Filter series
         self.filtered_series = {}
-        for series_name, episodes in self.grouped_series.items():
-            # Category filter
-            if selected_category == "⭐ Favoriti":
-                if series_name not in favorite_series:
+
+        # Special handling for Continue Watching
+        if selected_category == "▶ Nastavi Gledanje":
+            # Get continue watching items from database
+            continue_watching_items = self.db.get_continue_watching(limit=50)
+
+            # Map stream IDs to series
+            # For series, we want to show the series (not individual episodes)
+            # So we group continue watching episodes by their series name
+            continue_watching_series = {}
+
+            for cw_item in continue_watching_items:
+                # Check if this is a series episode (has content_type='series')
+                if cw_item.content_type == 'series':
+                    # Find the series this episode belongs to
+                    for series_name, episodes in self.grouped_series.items():
+                        # Check if any episode matches this stream_id
+                        for ep in episodes:
+                            if str(ep.stream_id) == cw_item.stream_id:
+                                # Found the series, add it to continue watching
+                                if series_name not in continue_watching_series:
+                                    continue_watching_series[series_name] = episodes
+                                break
+
+            # Apply search filter
+            for series_name, episodes in continue_watching_series.items():
+                if search_text and search_text not in series_name.lower():
                     continue
-            elif selected_category != "📺 Sve Serije":
-                # Check if any episode matches category
-                if not any(ep.category == selected_category for ep in episodes):
+                self.filtered_series[series_name] = episodes
+
+        else:
+            # Regular filtering
+            for series_name, episodes in self.grouped_series.items():
+                # Category filter
+                if selected_category == "⭐ Favoriti":
+                    if series_name not in favorite_series:
+                        continue
+                elif selected_category != "📺 Sve Serije":
+                    # Check if any episode matches category
+                    if not any(ep.category == selected_category for ep in episodes):
+                        continue
+
+                # Search filter
+                if search_text and search_text not in series_name.lower():
                     continue
-            
-            # Search filter
-            if search_text and search_text not in series_name.lower():
-                continue
-            
-            self.filtered_series[series_name] = episodes
+
+                self.filtered_series[series_name] = episodes
         
         # Reset pagination
         self.current_page = 0

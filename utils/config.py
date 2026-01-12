@@ -50,15 +50,30 @@ class Config:
         except Exception as e:
             logger.error(f"Failed to save configuration: {e}")
     
-    def get(self, section: str, key: str, default=None):
-        """Get configuration value"""
+    def get(self, section: str, key: str = None, default=None):
+        """
+        Get configuration value
+
+        Args:
+            section: Section name (e.g., 'display')
+            key: Key name (optional, if None returns whole section)
+            default: Default value if not found
+        """
+        if key is None:
+            # Return whole section
+            return self.settings.get(section, default)
+
         if section in self.settings and key in self.settings[section]:
             return self.settings[section][key]
         return default
-    
+
     def set(self, section: str, key: str, value):
         """Set configuration value"""
         if section not in self.settings:
             self.settings[section] = {}
-        
+
         self.settings[section][key] = value
+
+    def get_flat(self, key: str, default=None):
+        """Get configuration value from root level (for backward compatibility)"""
+        return self.settings.get(key, default)

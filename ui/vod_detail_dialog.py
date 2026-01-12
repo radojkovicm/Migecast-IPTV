@@ -14,6 +14,7 @@ class VODDetailDialog(QDialog):
     """Dialog for displaying VOD item details"""
     
     play_clicked = pyqtSignal()
+    resume_clicked = pyqtSignal(int)  # Emituj poziciju u sekundama
     favorite_changed = pyqtSignal()
     
     def __init__(self, vod_item: VODItem, image_cache: ImageCache, db: Database, parent=None):
@@ -156,12 +157,73 @@ class VODDetailDialog(QDialog):
         scroll.setWidget(scroll_content)
         main_layout.addWidget(scroll)
         
-        # Bottom buttons
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(10)
-        
-        # Play button
-        play_btn = QPushButton("▶ Pusti Film")
+        # Bottom buttons - organized in two rows
+        buttons_container = QVBoxLayout()
+        buttons_container.setSpacing(10)
+
+        # Check watch progress
+        self.watch_progress = self.db.get_watch_progress(str(self.vod_item.stream_id))
+
+        # Top row - Continue Watching buttons (if watch progress exists)
+        if self.watch_progress and self.watch_progress.position_seconds > 60:
+            continue_watching_layout = QHBoxLayout()
+            continue_watching_layout.setSpacing(10)
+
+            # Resume button
+            progress_percent = self.watch_progress.progress_percent
+            resume_time = self.format_time(self.watch_progress.position_seconds)
+
+            resume_btn = QPushButton(f"▶ Nastavi ({resume_time}) - {progress_percent}%")
+            resume_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 16pt;
+                    padding: 12px 30px;
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #0b7dda;
+                }
+                QPushButton:pressed {
+                    background-color: #0069c0;
+                }
+            """)
+            resume_btn.clicked.connect(self.on_resume_clicked)
+            continue_watching_layout.addWidget(resume_btn)
+
+            # Mark as Watched button
+            mark_watched_btn = QPushButton("✓ Označi kao Odgledano")
+            mark_watched_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 14pt;
+                    padding: 12px 20px;
+                    background-color: #9C27B0;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #7B1FA2;
+                }
+                QPushButton:pressed {
+                    background-color: #6A1B9A;
+                }
+            """)
+            mark_watched_btn.clicked.connect(self.on_mark_watched_clicked)
+            continue_watching_layout.addWidget(mark_watched_btn)
+
+            buttons_container.addLayout(continue_watching_layout)
+
+        # Bottom row - Standard buttons
+        standard_buttons_layout = QHBoxLayout()
+        standard_buttons_layout.setSpacing(10)
+
+        # Play button (od početka)
+        play_btn = QPushButton("▶ Pusti od Početka" if self.watch_progress else "▶ Pusti Film")
         play_btn.setStyleSheet("""
             QPushButton {
                 font-size: 16pt;
@@ -180,8 +242,8 @@ class VODDetailDialog(QDialog):
             }
         """)
         play_btn.clicked.connect(self.on_play_clicked)
-        button_layout.addWidget(play_btn)
-        
+        standard_buttons_layout.addWidget(play_btn)
+
         # Favorite button
         self.fav_btn = QPushButton("⭐ Ukloni iz Favorita" if self.is_favorite else "☆ Dodaj u Favorite")
         self.fav_btn.setStyleSheet("""
@@ -202,8 +264,8 @@ class VODDetailDialog(QDialog):
             }
         """)
         self.fav_btn.clicked.connect(self.on_favorite_clicked)
-        button_layout.addWidget(self.fav_btn)
-        
+        standard_buttons_layout.addWidget(self.fav_btn)
+
         # Back button
         back_btn = QPushButton("← Nazad")
         back_btn.setStyleSheet("""
@@ -223,9 +285,10 @@ class VODDetailDialog(QDialog):
             }
         """)
         back_btn.clicked.connect(self.close)
-        button_layout.addWidget(back_btn)
-        
-        main_layout.addLayout(button_layout)
+        standard_buttons_layout.addWidget(back_btn)
+
+        buttons_container.addLayout(standard_buttons_layout)
+        main_layout.addLayout(buttons_container)
     
     def on_image_ready(self, url: str, pixmap: QPixmap):
         """Update poster when image is downloaded"""
@@ -237,7 +300,24 @@ class VODDetailDialog(QDialog):
         """Handle play button click"""
         self.play_clicked.emit()
         self.close()
-    
+
+    def on_resume_clicked(self):
+        """Handle resume button click - play from saved position"""
+        if self.watch_progress:
+            self.resume_clicked.emit(self.watch_progress.position_seconds)
+            self.close()
+
+    def format_time(self, seconds: int) -> str:
+        """Format seconds to MM:SS or HH:MM:SS"""
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes}:{secs:02d}"
+
     def on_favorite_clicked(self):
         """Handle favorite button click"""
         if self.is_favorite:
@@ -252,10 +332,177 @@ class VODDetailDialog(QDialog):
             self.is_favorite = True
             self.fav_btn.setText("⭐ Ukloni iz Favorita")
             logger.info(f"Added to favorites: {self.vod_item.name}")
-        
+
         # Notify parent to refresh
         self.favorite_changed.emit()
-    
+
+    def on_mark_watched_clicked(self):
+        """Mark as watched - resets to initial state (removes Resume button)"""
+        logger.info(f"Marking as watched (resetting progress): {self.vod_item.name}")
+        # Delete watch progress completely to return to initial state
+        self.db.delete_watch_progress(str(self.vod_item.stream_id))
+        # Refresh buttons to show updated state
+        self.refresh_buttons()
+
+    def refresh_buttons(self):
+        """Refresh button layout to show updated watch progress"""
+        logger.info(f"Refreshing buttons for: {self.vod_item.name}")
+
+        # Re-check watch progress
+        self.watch_progress = self.db.get_watch_progress(str(self.vod_item.stream_id))
+
+        # Find and remove old button container
+        main_layout = self.layout()
+        if main_layout and main_layout.count() >= 2:
+            # Last item should be buttons_container
+            old_buttons_item = main_layout.takeAt(main_layout.count() - 1)
+            if old_buttons_item:
+                # Delete all widgets in old container
+                self._clear_layout(old_buttons_item.layout())
+                old_buttons_item.layout().deleteLater()
+
+        # Rebuild button container
+        buttons_container = QVBoxLayout()
+        buttons_container.setSpacing(10)
+
+        # Top row - Continue Watching buttons (if watch progress exists)
+        if self.watch_progress and self.watch_progress.position_seconds > 60:
+            continue_watching_layout = QHBoxLayout()
+            continue_watching_layout.setSpacing(10)
+
+            # Resume button
+            progress_percent = self.watch_progress.progress_percent
+            resume_time = self.format_time(self.watch_progress.position_seconds)
+
+            resume_btn = QPushButton(f"▶ Nastavi ({resume_time}) - {progress_percent}%")
+            resume_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 16pt;
+                    padding: 12px 30px;
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #0b7dda;
+                }
+                QPushButton:pressed {
+                    background-color: #0069c0;
+                }
+            """)
+            resume_btn.clicked.connect(self.on_resume_clicked)
+            continue_watching_layout.addWidget(resume_btn)
+
+            # Mark as Watched button
+            mark_watched_btn = QPushButton("✓ Označi kao Odgledano")
+            mark_watched_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 14pt;
+                    padding: 12px 20px;
+                    background-color: #9C27B0;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #7B1FA2;
+                }
+                QPushButton:pressed {
+                    background-color: #6A1B9A;
+                }
+            """)
+            mark_watched_btn.clicked.connect(self.on_mark_watched_clicked)
+            continue_watching_layout.addWidget(mark_watched_btn)
+
+            buttons_container.addLayout(continue_watching_layout)
+
+        # Bottom row - Standard buttons
+        standard_buttons_layout = QHBoxLayout()
+        standard_buttons_layout.setSpacing(10)
+
+        # Play button (od početka)
+        play_btn = QPushButton("▶ Pusti od Početka" if self.watch_progress else "▶ Pusti Film")
+        play_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16pt;
+                padding: 12px 30px;
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+            QPushButton:pressed {
+                background-color: #3d8b40;
+            }
+        """)
+        play_btn.clicked.connect(self.on_play_clicked)
+        standard_buttons_layout.addWidget(play_btn)
+
+        # Favorite button (update reference)
+        self.fav_btn = QPushButton("⭐ Ukloni iz Favorita" if self.is_favorite else "☆ Dodaj u Favorite")
+        self.fav_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16pt;
+                padding: 12px 30px;
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                border-radius: 8px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+            QPushButton:pressed {
+                background-color: #E65100;
+            }
+        """)
+        self.fav_btn.clicked.connect(self.on_favorite_clicked)
+        standard_buttons_layout.addWidget(self.fav_btn)
+
+        # Back button
+        back_btn = QPushButton("← Nazad")
+        back_btn.setStyleSheet("""
+            QPushButton {
+                font-size: 16pt;
+                padding: 12px 30px;
+                background-color: #555;
+                color: white;
+                border: none;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background-color: #666;
+            }
+            QPushButton:pressed {
+                background-color: #444;
+            }
+        """)
+        back_btn.clicked.connect(self.close)
+        standard_buttons_layout.addWidget(back_btn)
+
+        buttons_container.addLayout(standard_buttons_layout)
+        main_layout.addLayout(buttons_container)
+
+    def _clear_layout(self, layout):
+        """Helper to recursively clear layout"""
+        if layout is None:
+            return
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+            elif item.layout():
+                self._clear_layout(item.layout())
+
     def closeEvent(self, event):
         """Handle dialog close event"""
         logger.info(f"Closing VOD detail dialog: {self.vod_item.name}")

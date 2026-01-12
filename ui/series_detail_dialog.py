@@ -12,13 +12,16 @@ logger = logging.getLogger(__name__)
 
 class EpisodeWidget(QWidget):
     """Widget for single episode"""
-    
+
     play_clicked = pyqtSignal(SeriesItem)
-    
-    def __init__(self, episode: SeriesItem, image_cache: ImageCache):
+    resume_clicked = pyqtSignal(SeriesItem, int)  # episode, position_seconds
+    mark_watched_clicked = pyqtSignal(SeriesItem)  # episode to mark as watched
+
+    def __init__(self, episode: SeriesItem, image_cache: ImageCache, db: Database):
         super().__init__()
         self.episode = episode
         self.image_cache = image_cache
+        self.db = db
         self.init_ui()
     
     def init_ui(self):
@@ -84,36 +87,138 @@ class EpisodeWidget(QWidget):
         
         info_layout.addStretch()
         layout.addLayout(info_layout, stretch=1)
-        
-        # Play button
-        play_btn = QPushButton("▶ Pusti")
-        play_btn.setFixedSize(150, 60)
-        play_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 18pt;
-                padding: 15px;
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                border-radius: 10px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-            }
-            QPushButton:pressed {
-                background-color: #3d8b40;
-            }
-        """)
-        play_btn.clicked.connect(lambda: self.play_clicked.emit(self.episode))
-        layout.addWidget(play_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Button layout - horizontal with Resume on left, Play/Mark Watched on right
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
+
+        # Check for watch progress
+        watch_progress = self.db.get_watch_progress(str(self.episode.stream_id))
+
+        if watch_progress and watch_progress.position_seconds > 60:
+            # Resume button on the left
+            resume_time = self.format_time(watch_progress.position_seconds)
+            progress_percent = watch_progress.progress_percent
+
+            resume_btn = QPushButton(f"▶ Nastavi {resume_time}")
+            resume_btn.setFixedSize(160, 110)
+            resume_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 14pt;
+                    padding: 10px;
+                    background-color: #2196F3;
+                    color: white;
+                    border: none;
+                    border-radius: 10px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #0b7dda;
+                }
+                QPushButton:pressed {
+                    background-color: #0069c0;
+                }
+            """)
+            resume_btn.clicked.connect(lambda: self.resume_clicked.emit(self.episode, watch_progress.position_seconds))
+            button_layout.addWidget(resume_btn)
+
+            # Right side buttons (Play from start + Mark as Watched)
+            right_buttons_layout = QVBoxLayout()
+            right_buttons_layout.setSpacing(5)
+
+            # Play from start button
+            play_btn = QPushButton("⏮ Od početka")
+            play_btn.setFixedSize(160, 52)
+            play_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 12pt;
+                    padding: 8px;
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #45a049;
+                }
+                QPushButton:pressed {
+                    background-color: #3d8b40;
+                }
+            """)
+            play_btn.clicked.connect(lambda: self.play_clicked.emit(self.episode))
+            right_buttons_layout.addWidget(play_btn)
+
+            # Mark as Watched button
+            mark_watched_btn = QPushButton("✓ Odgledano")
+            mark_watched_btn.setFixedSize(160, 52)
+            mark_watched_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 11pt;
+                    padding: 8px;
+                    background-color: #9C27B0;
+                    color: white;
+                    border: none;
+                    border-radius: 8px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #7B1FA2;
+                }
+                QPushButton:pressed {
+                    background-color: #6A1B9A;
+                }
+            """)
+            mark_watched_btn.clicked.connect(lambda: self.mark_watched_clicked.emit(self.episode))
+            right_buttons_layout.addWidget(mark_watched_btn)
+
+            button_layout.addLayout(right_buttons_layout)
+        else:
+            # Regular play button - centered, larger
+            play_btn = QPushButton("▶ Pusti")
+            play_btn.setFixedSize(200, 80)
+            play_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 18pt;
+                    padding: 15px;
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    border-radius: 10px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #45a049;
+                }
+                QPushButton:pressed {
+                    background-color: #3d8b40;
+                }
+            """)
+            play_btn.clicked.connect(lambda: self.play_clicked.emit(self.episode))
+            button_layout.addWidget(play_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+
+        # Create container widget for button layout with center alignment
+        button_container = QWidget()
+        button_container.setLayout(button_layout)
+        layout.addWidget(button_container, alignment=Qt.AlignmentFlag.AlignCenter)
     
     def on_image_ready(self, url: str, pixmap: QPixmap):
         """Update poster when image is downloaded"""
         if url == self.episode.cover and not pixmap.isNull():
             self.poster_label.setPixmap(pixmap)
             self.poster_label.setStyleSheet("background-color: #1a1a1a; border-radius: 8px; border: 2px solid #555;")
-    
+
+    def format_time(self, seconds: int) -> str:
+        """Format seconds to MM:SS or HH:MM:SS"""
+        hours = seconds // 3600
+        minutes = (seconds % 3600) // 60
+        secs = seconds % 60
+
+        if hours > 0:
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        else:
+            return f"{minutes}:{secs:02d}"
+
     def set_selected(self, value: bool):
         """Set selected state for episode widget"""
         self.setProperty("selected", value)
@@ -123,8 +228,9 @@ class EpisodeWidget(QWidget):
 
 class SeriesDetailDialog(QDialog):
     """Dialog for displaying series details with seasons and episodes"""
-    
+
     play_episode_clicked = pyqtSignal(SeriesItem)
+    resume_episode_clicked = pyqtSignal(SeriesItem, int)  # episode, position_seconds
     favorite_changed = pyqtSignal()
     
     def __init__(self, series_name: str, all_episodes: list, image_cache: ImageCache, db: Database, parent=None):
@@ -439,8 +545,10 @@ class SeriesDetailDialog(QDialog):
             self.parent().current_series_episodes = episodes_sorted
         
         for episode in episodes_sorted:
-            episode_widget = EpisodeWidget(episode, self.image_cache)
+            episode_widget = EpisodeWidget(episode, self.image_cache, self.db)
             episode_widget.play_clicked.connect(self.on_episode_play_clicked)
+            episode_widget.resume_clicked.connect(self.on_episode_resume_clicked)
+            episode_widget.mark_watched_clicked.connect(self.on_episode_mark_watched)
             self.episodes_layout.addWidget(episode_widget)
         
         self.episodes_layout.addStretch()
@@ -450,7 +558,28 @@ class SeriesDetailDialog(QDialog):
         logger.info(f"Playing episode: {episode.name}")
         self.play_episode_clicked.emit(episode)
         self.close()
-        
+
+    def on_episode_resume_clicked(self, episode: SeriesItem, position_seconds: int):
+        """Handle episode resume button click"""
+        logger.info(f"Resuming episode: {episode.name} at {position_seconds}s")
+        self.resume_episode_clicked.emit(episode, position_seconds)
+        self.close()
+
+    def on_episode_mark_watched(self, episode: SeriesItem):
+        """Mark episode as watched - resets to initial state (removes Resume button)"""
+        logger.info(f"Marking episode as watched (resetting progress): {episode.name}")
+        # Delete watch progress completely to return to initial state
+        self.db.delete_watch_progress(str(episode.stream_id))
+        # Reload current season to update UI
+        current_season = self.season_combo.currentData()
+        self.load_season(current_season)
+
+    def refresh_episodes(self):
+        """Refresh episode list to show updated watch progress"""
+        logger.info("Refreshing episode list")
+        current_season = self.season_combo.currentData()
+        self.load_season(current_season)
+
     def update_fav_button(self):
         if self.is_favorite:
             self.fav_btn.setText("⭐ Odstrani iz favorita")

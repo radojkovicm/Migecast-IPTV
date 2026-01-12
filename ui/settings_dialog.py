@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QThread
 from core.playlist_parser import PlaylistParser
 from core.database import Database
 from utils.config import Config
+from utils.error_messages import get_user_friendly_error
 
 logger = logging.getLogger(__name__)
 
@@ -68,8 +69,10 @@ class PlaylistLoaderThread(QThread):
             self.finished.emit(channels, vod_items, series_items)
         
         except Exception as e:
-            error_msg = f"{str(type(e).__name__)}: {str(e)}"
-            logger.error(f"Error in PlaylistLoaderThread.run(): {error_msg}", exc_info=True)
+            logger.error(f"Error in PlaylistLoaderThread.run(): {e}", exc_info=True)
+            # Use user-friendly error message
+            context = 'playlist' if self.playlist_type == 'm3u' else 'xtream'
+            error_msg = get_user_friendly_error(e, context)
             self.error.emit(error_msg)
 
 
@@ -90,42 +93,46 @@ class SettingsDialog(QDialog):
     def init_ui(self):
         """Initialize UI"""
         self.setWindowTitle("⚙ Podešavanja - MigeCast IPTV")
-        self.setMinimumSize(800, 600)
-        
+        self.setMinimumSize(700, 500)
+        self.resize(700, 500)
+
         layout = QVBoxLayout(self)
-        
+
         # Tab widget
         tab_widget = QTabWidget()
-        tab_widget.setStyleSheet("font-size: 14pt;")
-        
+        tab_widget.setStyleSheet("font-size: 11pt;")
+
         # Playlists tab
         tab_widget.addTab(self.create_playlists_tab(), "📋 Upravljanje Listama")
-        
+
         # Display tab
         tab_widget.addTab(self.create_display_tab(), "🖥 Prikaz")
-        
+
+        # Appearance tab (NOVO)
+        tab_widget.addTab(self.create_appearance_tab(), "🎨 Izgled")
+
         # Player tab
         tab_widget.addTab(self.create_player_tab(), "▶ Player")
-        
+
         # About tab
         tab_widget.addTab(self.create_about_tab(), "ℹ O Programu")
-        
+
         layout.addWidget(tab_widget)
-        
+
         # Bottom buttons
         button_layout = QHBoxLayout()
         button_layout.addStretch()
-        
+
         save_btn = QPushButton("💾 Sačuvaj")
-        save_btn.setStyleSheet("font-size: 16pt; padding: 10px 30px;")
+        save_btn.setStyleSheet("font-size: 11pt; padding: 6px 20px;")
         save_btn.clicked.connect(self.save_settings)
         button_layout.addWidget(save_btn)
-        
+
         cancel_btn = QPushButton("✖ Otkaži")
-        cancel_btn.setStyleSheet("font-size: 16pt; padding: 10px 30px;")
+        cancel_btn.setStyleSheet("font-size: 11pt; padding: 6px 20px;")
         cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
-        
+
         layout.addLayout(button_layout)
     
     def create_playlists_tab(self) -> QWidget:
@@ -135,50 +142,50 @@ class SettingsDialog(QDialog):
         
         # NOVO - Refresh sekcija (na vrhu)
         refresh_group = QGroupBox("🔄 Osvežavanje Liste")
-        refresh_group.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        refresh_group.setStyleSheet("font-size: 11pt; font-weight: bold;")
         refresh_layout = QVBoxLayout(refresh_group)
-        
+
         refresh_info = QLabel(
             "Osvežite trenutnu listu da preuzmete najnovije kanale, filmove i serije.\n"
             "Ovo će ponovo učitati listu sa servera."
         )
-        refresh_info.setStyleSheet("font-size: 12pt; color: #666; font-weight: normal;")
+        refresh_info.setStyleSheet("font-size: 10pt; color: #666; font-weight: normal;")
         refresh_info.setWordWrap(True)
         refresh_layout.addWidget(refresh_info)
-        
+
         refresh_btn = QPushButton("🔄 Osveži Trenutnu Listu")
         refresh_btn.setStyleSheet("""
-            font-size: 14pt; 
-            padding: 10px 20px; 
-            background-color: #FF9800; 
+            font-size: 11pt;
+            padding: 6px 16px;
+            background-color: #FF9800;
             color: white;
             font-weight: bold;
         """)
         refresh_btn.clicked.connect(self.refresh_current_playlist)
         refresh_layout.addWidget(refresh_btn)
-        
+
         layout.addWidget(refresh_group)
-        
+
         # M3U File section
         m3u_group = QGroupBox("📄 Dodaj M3U Fajl")
-        m3u_group.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        m3u_group.setStyleSheet("font-size: 11pt; font-weight: bold;")
         m3u_layout = QVBoxLayout(m3u_group)
         
         path_layout = QHBoxLayout()
         self.m3u_path_input = QLineEdit()
         self.m3u_path_input.setPlaceholderText("Putanja do M3U fajla...")
-        self.m3u_path_input.setStyleSheet("font-size: 14pt; padding: 8px;")
+        self.m3u_path_input.setStyleSheet("font-size: 11pt; padding: 6px;")
         path_layout.addWidget(self.m3u_path_input)
         
         browse_btn = QPushButton("📁 Pretraži")
-        browse_btn.setStyleSheet("font-size: 14pt; padding: 8px 15px;")
+        browse_btn.setStyleSheet("font-size: 11pt; padding: 6px 15px;")
         browse_btn.clicked.connect(self.browse_m3u_file)
         path_layout.addWidget(browse_btn)
         
         m3u_layout.addLayout(path_layout)
         
         load_m3u_btn = QPushButton("✓ Učitaj M3U Listu")
-        load_m3u_btn.setStyleSheet("font-size: 14pt; padding: 10px 20px; background-color: #4CAF50; color: white;")
+        load_m3u_btn.setStyleSheet("font-size: 11pt; padding: 6px 16px; background-color: #4CAF50; color: white;")
         load_m3u_btn.clicked.connect(self.load_m3u_file)
         m3u_layout.addWidget(load_m3u_btn)
         
@@ -186,27 +193,27 @@ class SettingsDialog(QDialog):
         
         # Xtream Codes section
         xtream_group = QGroupBox("🌐 Dodaj Xtream Codes")
-        xtream_group.setStyleSheet("font-size: 14pt; font-weight: bold;")
+        xtream_group.setStyleSheet("font-size: 11pt; font-weight: bold;")
         xtream_layout = QFormLayout(xtream_group)
         
         self.xtream_server_input = QLineEdit()
         self.xtream_server_input.setPlaceholderText("http://server.com:port")
-        self.xtream_server_input.setStyleSheet("font-size: 14pt; padding: 8px;")
+        self.xtream_server_input.setStyleSheet("font-size: 11pt; padding: 6px;")
         xtream_layout.addRow("Server URL:", self.xtream_server_input)
         
         self.xtream_username_input = QLineEdit()
         self.xtream_username_input.setPlaceholderText("Korisničko ime")
-        self.xtream_username_input.setStyleSheet("font-size: 14pt; padding: 8px;")
+        self.xtream_username_input.setStyleSheet("font-size: 11pt; padding: 6px;")
         xtream_layout.addRow("Username:", self.xtream_username_input)
         
         self.xtream_password_input = QLineEdit()
         self.xtream_password_input.setPlaceholderText("Lozinka")
         self.xtream_password_input.setEchoMode(QLineEdit.EchoMode.Password)
-        self.xtream_password_input.setStyleSheet("font-size: 14pt; padding: 8px;")
+        self.xtream_password_input.setStyleSheet("font-size: 11pt; padding: 6px;")
         xtream_layout.addRow("Password:", self.xtream_password_input)
         
         load_xtream_btn = QPushButton("✓ Učitaj Xtream Listu")
-        load_xtream_btn.setStyleSheet("font-size: 14pt; padding: 10px 20px; background-color: #4CAF50; color: white;")
+        load_xtream_btn.setStyleSheet("font-size: 11pt; padding: 6px 16px; background-color: #4CAF50; color: white;")
         load_xtream_btn.clicked.connect(self.load_xtream_codes)
         xtream_layout.addRow("", load_xtream_btn)
         
@@ -224,12 +231,12 @@ class SettingsDialog(QDialog):
         # Max channels
         channels_layout = QHBoxLayout()
         channels_label = QLabel("Maksimalan broj kanala:")
-        channels_label.setStyleSheet("font-size: 14pt;")
+        channels_label.setStyleSheet("font-size: 11pt;")
         channels_layout.addWidget(channels_label)
         
         self.max_channels_combo = QComboBox()
         self.max_channels_combo.addItems(["500", "1000", "Sve"])
-        self.max_channels_combo.setStyleSheet("font-size: 14pt; padding: 5px;")
+        self.max_channels_combo.setStyleSheet("font-size: 11pt; padding: 5px;")
         channels_layout.addWidget(self.max_channels_combo)
         channels_layout.addStretch()
         
@@ -238,21 +245,50 @@ class SettingsDialog(QDialog):
         # Max VOD
         vod_layout = QHBoxLayout()
         vod_label = QLabel("Maksimalan broj VOD:")
-        vod_label.setStyleSheet("font-size: 14pt;")
+        vod_label.setStyleSheet("font-size: 11pt;")
         vod_layout.addWidget(vod_label)
         
         self.max_vod_combo = QComboBox()
         self.max_vod_combo.addItems(["200", "500", "Sve"])
-        self.max_vod_combo.setStyleSheet("font-size: 14pt; padding: 5px;")
+        self.max_vod_combo.setStyleSheet("font-size: 11pt; padding: 5px;")
         vod_layout.addWidget(self.max_vod_combo)
         vod_layout.addStretch()
         
         layout.addLayout(vod_layout)
         
         layout.addStretch()
-        
+
         return widget
-    
+
+    def create_appearance_tab(self) -> QWidget:
+        """Create appearance settings tab"""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        # Theme selection
+        theme_group = QGroupBox("🎨 Tema")
+        theme_group.setStyleSheet("font-size: 11pt; font-weight: bold;")
+        theme_layout = QVBoxLayout(theme_group)
+
+        theme_label = QLabel("Izaberite temu:")
+        theme_label.setStyleSheet("font-size: 10pt; font-weight: normal;")
+        theme_layout.addWidget(theme_label)
+
+        self.theme_combo = QComboBox()
+        self.theme_combo.setStyleSheet("font-size: 11pt; padding: 6px;")
+
+        # Add themes
+        from utils.themes import get_theme_names
+        for theme_id, theme_name in get_theme_names():
+            self.theme_combo.addItem(theme_name, theme_id)
+
+        theme_layout.addWidget(self.theme_combo)
+        layout.addWidget(theme_group)
+
+        layout.addStretch()
+
+        return widget
+
     def create_player_tab(self) -> QWidget:
         """Create player settings tab"""
         widget = QWidget()
@@ -261,14 +297,14 @@ class SettingsDialog(QDialog):
         # Auto-reconnect
         reconnect_layout = QHBoxLayout()
         reconnect_label = QLabel("Auto-reconnect pokušaji:")
-        reconnect_label.setStyleSheet("font-size: 14pt;")
+        reconnect_label.setStyleSheet("font-size: 11pt;")
         reconnect_layout.addWidget(reconnect_label)
         
         self.reconnect_spin = QSpinBox()
         self.reconnect_spin.setMinimum(1)
         self.reconnect_spin.setMaximum(10)
         self.reconnect_spin.setValue(3)
-        self.reconnect_spin.setStyleSheet("font-size: 14pt; padding: 5px;")
+        self.reconnect_spin.setStyleSheet("font-size: 11pt; padding: 5px;")
         reconnect_layout.addWidget(self.reconnect_spin)
         reconnect_layout.addStretch()
         
@@ -277,7 +313,7 @@ class SettingsDialog(QDialog):
         # Hardware acceleration
         self.hw_accel_check = QCheckBox("✓ Omogući hardversku akceleraciju")
         self.hw_accel_check.setChecked(True)
-        self.hw_accel_check.setStyleSheet("font-size: 14pt;")
+        self.hw_accel_check.setStyleSheet("font-size: 11pt;")
         layout.addWidget(self.hw_accel_check)
         
         layout.addStretch()
@@ -298,18 +334,18 @@ class SettingsDialog(QDialog):
         
         # Version
         version_label = QLabel("Verzija: 1.0.0")
-        version_label.setStyleSheet("font-size: 16pt;")
+        version_label.setStyleSheet("font-size: 12pt;")
         version_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(version_label)
         
         # Description
         desc_label = QLabel("Profesionalna IPTV aplikacija za Windows")
-        desc_label.setStyleSheet("font-size: 14pt; color: #666;")
+        desc_label.setStyleSheet("font-size: 11pt; color: #666;")
         desc_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(desc_label)
         
         # Copyright
-        copyright_label = QLabel("© 2025 Mige. Sva prava zadržana.")
+        copyright_label = QLabel("© 2026 Mige. Sva prava zadržana.")
         copyright_label.setStyleSheet("font-size: 12pt; color: #999; margin-top: 20px;")
         copyright_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(copyright_label)
@@ -404,7 +440,8 @@ class SettingsDialog(QDialog):
             logger.info(f"Loading M3U file: {file_path}")
         except Exception as e:
             logger.error(f"Error in load_m3u_file: {e}", exc_info=True)
-            QMessageBox.critical(self, "Greška", f"Greška pri učitavanju:\n{str(e)}")
+            error_msg = get_user_friendly_error(e, 'playlist')
+            QMessageBox.critical(self, "Greška", f"Greška pri učitavanju:\n\n{error_msg}")
     
     def load_xtream_codes(self):
         """Load Xtream Codes playlist with progress dialog"""
@@ -448,7 +485,8 @@ class SettingsDialog(QDialog):
             logger.info(f"Loading Xtream Codes from: {server}")
         except Exception as e:
             logger.error(f"Error in load_xtream_codes: {e}", exc_info=True)
-            QMessageBox.critical(self, "Greška", f"Greška pri učitavanju:\n{str(e)}")
+            error_msg = get_user_friendly_error(e, 'xtream')
+            QMessageBox.critical(self, "Greška", f"Greška pri učitavanju:\n\n{error_msg}")
     
     def on_loading_progress(self, message: str):
         """Update progress dialog"""
@@ -527,6 +565,14 @@ class SettingsDialog(QDialog):
         self.max_vod_combo.setCurrentText(self.config.get('display', 'max_vod', '200'))
         self.reconnect_spin.setValue(self.config.get('player', 'reconnect_attempts', 3))
         self.hw_accel_check.setChecked(self.config.get('player', 'hw_acceleration', True))
+
+        # Load appearance settings
+        theme_name = self.config.get('appearance', 'theme', 'dark')
+
+        # Set theme combo
+        index = self.theme_combo.findData(theme_name)
+        if index >= 0:
+            self.theme_combo.setCurrentIndex(index)
     
     def save_settings(self):
         """Save settings to config"""
@@ -534,8 +580,28 @@ class SettingsDialog(QDialog):
         self.config.set('display', 'max_vod', self.max_vod_combo.currentText())
         self.config.set('player', 'reconnect_attempts', self.reconnect_spin.value())
         self.config.set('player', 'hw_acceleration', self.hw_accel_check.isChecked())
-        
+
+        # Save appearance settings
+        selected_theme = self.theme_combo.currentData()
+        self.config.set('appearance', 'theme', selected_theme)
+
         self.config.save()
-        
+
+        # Apply theme immediately
+        if self.parent() and hasattr(self.parent(), 'apply_theme'):
+            self.parent().apply_theme()
+
         QMessageBox.information(self, "Uspeh", "Podešavanja su sačuvana.")
         self.accept()
+
+    def showEvent(self, event):
+        """Position dialog at top of screen when shown"""
+        super().showEvent(event)
+        if self.parent():
+            # Get parent geometry
+            parent_geo = self.parent().geometry()
+            # Center horizontally relative to parent
+            x = parent_geo.x() + (parent_geo.width() - self.width()) // 2
+            # Position at top edge (no margin)
+            y = parent_geo.y()
+            self.move(x, y)
