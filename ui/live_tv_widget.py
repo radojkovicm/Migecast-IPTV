@@ -69,34 +69,56 @@ class ChannelListItem(QWidget):
         # Favorite button
         self.fav_btn = QPushButton("⭐" if self._is_favorite else "☆")
         self.fav_btn.setFixedSize(40, 40)
-        self.fav_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 20pt;
-                background-color: transparent;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #f0f0f0;
-                border-radius: 5px;
-            }
-        """)
+        self._update_button_style()
         self.fav_btn.clicked.connect(self.on_favorite_clicked)
         layout.addWidget(self.fav_btn)
     
+    def _update_button_style(self):
+        """Update button style based on favorite status"""
+        if self._is_favorite:
+            # Bright yellow star for favorites - like in movies/series
+            self.fav_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 28pt;
+                    color: #FFD700;
+                    background-color: transparent;
+                    border: none;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    color: #FFA500;
+                }
+            """)
+        else:
+            # Gray/dim star for non-favorites
+            self.fav_btn.setStyleSheet("""
+                QPushButton {
+                    font-size: 28pt;
+                    color: #CCCCCC;
+                    background-color: transparent;
+                    border: none;
+                    padding: 0px;
+                }
+                QPushButton:hover {
+                    color: #4CAF50;
+                }
+            """)
+
     def on_image_ready(self, url: str, pixmap: QPixmap):
         """Update logo when image is downloaded"""
         if url == self.channel.logo and not pixmap.isNull():
             self.logo_label.setPixmap(pixmap)
             self.logo_label.setStyleSheet("")
-    
+
     def on_favorite_clicked(self):
         """Handle favorite button click"""
         self.favorite_toggled.emit(self.channel)
-    
+
     def set_favorite(self, is_favorite: bool):
         """Update favorite status"""
         self._is_favorite = is_favorite
         self.fav_btn.setText("⭐" if is_favorite else "☆")
+        self._update_button_style()
 
 
 class LiveTVWidget(QWidget):
@@ -336,17 +358,19 @@ class LiveTVWidget(QWidget):
     def toggle_favorite(self, channel: Channel):
         """Toggle channel favorite status"""
         try:
+            logger.info(f"Toggle favorite clicked - Channel: {channel.name}, ID: {channel.channel_id}")
+
             if channel.channel_id in self.favorite_ids:
                 # Remove from favorites
                 self.db.remove_channel_favorite(channel.channel_id)
                 self.favorite_ids.discard(channel.channel_id)
-                logger.info(f"Removed from favorites: {channel.name}")
+                logger.info(f"Removed from favorites: {channel.name} (ID: {channel.channel_id})")
             else:
                 # Add to favorites
                 self.db.add_channel_favorite(channel.channel_id, channel.name)
                 self.favorite_ids.add(channel.channel_id)
-                logger.info(f"Added to favorites: {channel.name}")
-            
+                logger.info(f"Added to favorites: {channel.name} (ID: {channel.channel_id})")
+
             # Refresh display
             self.refresh_favorites()
         except Exception as e:

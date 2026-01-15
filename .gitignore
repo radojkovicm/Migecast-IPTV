@@ -1,4 +1,4 @@
-*.png
+"*.png
 *.pyc
 *.jpg
 *.dll
@@ -6,3 +6,11 @@
 __pycache__/
 *.db-journal
 cache/images/
+dist/
+build/
+*.exe
+*.pkg
+*.spec
+*.log
+hooks/
+logs/" | Out-File -FilePath ".gitignore" -Encoding UTF8
