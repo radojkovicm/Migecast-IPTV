@@ -43,3 +43,7 @@ vendor/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Obsolete files of version 1.x (kept locally, not used by 2.x)
+hooks/
+resources/styles.qss
