@@ -156,5 +156,7 @@ jobs:
         run: |
           $name = "${{ steps.hash.outputs.name }}"
           $notes = "MigeCast IPTV ${{ steps.version.outputs.version }} for Windows 10/11 (64-bit).`n`nSHA-256: ${{ steps.hash.outputs.sha256 }}"
+          $extra = @()
+          if ("${{ github.ref_name }}" -like "*-*") { $extra += "--prerelease" }   # e.g. v2.0.0-beta1
           gh release create "${{ github.ref_name }}" "installer/Output/$name" "installer/Output/$name.sha256" `
-            --title "MigeCast IPTV ${{ steps.version.outputs.version }}" --notes $notes
+            --title "MigeCast IPTV ${{ github.ref_name }}" --notes $notes @extra
