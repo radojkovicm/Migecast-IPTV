@@ -168,8 +168,8 @@ def test_legacy_install_import(tmp_path, monkeypatch):
 
 
 def test_log_redaction():
-    line = redact("Playing http://line.example.invalid:80/abcuser/abcpass/123 and get.php?username=u1&password=p1 C:\\Users\\KATA\\list.m3u")
+    line = redact("Playing http://line.example.invalid:80/abcuser/abcpass/123 and get.php?username=u1&password=p1 C:\\Users\\Petar\\list.m3u")
     assert "abcuser" not in line and "abcpass" not in line
     assert "u1" not in line and "p1" not in line
-    assert "KATA" not in line
+    assert "Petar" not in line
     assert "line.example.invalid:80" in line
