@@ -793,7 +793,7 @@ class PlayerWidget(QWidget):
         self.fullscreen_controls.show_with_timer()
         
         # NOVO: Pozicioniraj title na vrh centar
-        if hasattr(self, 'title_overlay') and self.current_content_title:
+        if self._title_ok() and self.current_content_title:
             self.title_overlay.setText(self.current_content_title)
             self.title_overlay.adjustSize()
             title_x = (w - self.title_overlay.width()) // 2
@@ -969,7 +969,7 @@ class PlayerWidget(QWidget):
             self.is_playing = False
         self.current_content_title = content_title or ""
         # Ako je već fullscreen, osveži title odmah
-        if self.is_fullscreen and hasattr(self, 'title_overlay'):
+        if self.is_fullscreen and self._title_ok():
             if self.current_content_title:
                 self.title_overlay.setText(self.current_content_title)
                 self.title_overlay.adjustSize()
@@ -1240,7 +1240,7 @@ class PlayerWidget(QWidget):
                     "error": "Greška: kanal ili video trenutno nije dostupan", "ended": "Kraj"}
         if state in messages:
             self.status_label.setText(messages[state])
-            if self.is_fullscreen and hasattr(self, "title_overlay") and state in ("reconnecting", "error"):
+            if self.is_fullscreen and self._title_ok() and state in ("reconnecting", "error"):
                 self.title_overlay.setText(messages[state])
                 self.title_overlay.adjustSize()
                 self.title_overlay.show()
@@ -1334,13 +1334,20 @@ class PlayerWidget(QWidget):
             self._show_cursor()
             self.fullscreen_controls.show_with_timer()
 
+    def _title_ok(self) -> bool:
+        """The title label lives in the fullscreen window, which is destroyed
+        when fullscreen ends; timers may still fire afterwards."""
+        from PyQt6 import sip
+        overlay = getattr(self, "title_overlay", None)
+        return overlay is not None and not sip.isdeleted(overlay)
+
     def _show_title_overlay(self):
-        if hasattr(self, 'title_overlay') and self.current_content_title:
+        if self._title_ok() and self.current_content_title:
             self.title_overlay.show()
             self.title_overlay.raise_()
 
     def _hide_title_overlay(self):
-        if hasattr(self, 'title_overlay'):
+        if self._title_ok():
             self.title_overlay.hide()
     # ============================================================
     # CONTINUE WATCHING - Watch Progress Tracking
