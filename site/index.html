@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="sr-Latn">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MigeCast IPTV – preuzimanje za Windows</title>
+<meta name="description" content="MigeCast IPTV: jednostavan program za gledanje TV kanala, filmova i serija na Windows računaru. Jedan fajl, instalacija u par klikova.">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #141414; --muted: #4a4f57; --border: #d3d7dd;
+    --accent: #1e7a36; --accent-hover: #23913f; --accent-text: #ffffff; --code: #eef0f3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #15171a; --card: #1f2226; --text: #f2f2f2; --muted: #b3b8bf; --border: #3d434a;
+      --accent: #3fae5a; --accent-hover: #4cc56a; --accent-text: #0b1a10; --code: #2a2e33;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 20px/1.55 "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 16px 64px; }
+  header { display: flex; align-items: center; gap: 20px; margin-bottom: 28px; }
+  header img { width: 84px; height: 84px; }
+  h1 { font-size: 2.1rem; line-height: 1.15; margin: 0; }
+  .lead { font-size: 1.2rem; color: var(--muted); margin: 6px 0 0; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 20px; padding: 32px; margin: 24px 0; }
+  .platform { font-weight: 700; font-size: 1.15rem; margin: 0 0 20px; }
+  .download {
+    display: flex; align-items: center; justify-content: center; gap: 14px; width: 100%;
+    min-height: 88px; padding: 18px 28px; border-radius: 18px; border: 0;
+    background: var(--accent); color: var(--accent-text); font-size: 1.6rem; font-weight: 800;
+    text-decoration: none; cursor: pointer;
+  }
+  .download:hover, .download:focus-visible { background: var(--accent-hover); outline: 4px solid var(--text); outline-offset: 3px; }
+  .download[aria-disabled="true"] { opacity: .55; cursor: not-allowed; pointer-events: none; }
+  dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: 6px 20px; margin: 22px 0 0; font-size: 1rem; }
+  dl.meta dt { color: var(--muted); }
+  dl.meta dd { margin: 0; font-weight: 600; }
+  code.hash { display: block; margin-top: 4px; padding: 10px 12px; background: var(--code); border-radius: 10px;
+    font: 0.85rem/1.4 Consolas, "Courier New", monospace; overflow-wrap: anywhere; }
+  ol.steps { padding-left: 1.3em; margin: 0; }
+  ol.steps li { margin: 0 0 14px; padding-left: 6px; }
+  h2 { font-size: 1.45rem; margin: 0 0 16px; }
+  .note { font-size: 1rem; color: var(--muted); }
+  footer { font-size: .9rem; color: var(--muted); margin-top: 40px; }
+  @media (max-width: 520px) {
+    body { font-size: 18px; }
+    h1 { font-size: 1.7rem; }
+    .card { padding: 22px; }
+    .download { font-size: 1.3rem; min-height: 76px; }
+    dl.meta { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.png" alt="" width="84" height="84">
+    <div>
+      <h1>MigeCast IPTV</h1>
+      <p class="lead">TV kanali, filmovi i serije – velika dugmad, jednostavno za korišćenje mišem.</p>
+    </div>
+  </header>
+
+  <section class="card" aria-labelledby="dl">
+    <p class="platform" id="dl">Za Windows 10 i Windows 11 (64-bitni)</p>
+    <a id="download" class="download" href="#" aria-disabled="true">⬇&nbsp; Preuzmi za Windows</a>
+    <dl class="meta">
+      <dt>Verzija</dt><dd id="version">–</dd>
+      <dt>Veličina</dt><dd id="size">–</dd>
+      <dt>Datum</dt><dd id="date">–</dd>
+      <dt>SHA-256</dt><dd><code class="hash" id="sha">–</code></dd>
+    </dl>
+    <p class="note" id="status">Učitavam podatke o verziji…</p>
+  </section>
+
+  <section class="card" aria-labelledby="how">
+    <h2 id="how">Kako se instalira</h2>
+    <ol class="steps">
+      <li>Kliknite na zeleno dugme <b>Preuzmi za Windows</b>.</li>
+      <li>Kada se preuzimanje završi, otvorite preuzeti fajl (obično u folderu <b>Preuzimanja</b>).</li>
+      <li>Pratite korake na ekranu i kliknite <b>Dalje</b>, pa <b>Instaliraj</b>. Nisu potrebna administratorska prava.</li>
+      <li>Program se pokreće sam, a ikonica <b>MigeCast IPTV</b> se pojavljuje na radnoj površini i u Start meniju.</li>
+      <li>U programu otvorite <b>Podešavanja</b> i nalepite link liste koji ste dobili od vašeg IPTV dobavljača.</li>
+    </ol>
+    <p class="note">Ako Windows prikaže poruku „Windows je zaštitio vaš računar“, kliknite <b>Više informacija</b>, pa <b>Ipak pokreni</b>.
+      Ova poruka se pojavljuje za programe koji još nemaju digitalni potpis izdavača.</p>
+    <p class="note">Nova verzija se instalira preko stare – vaša lista, omiljeni kanali i istorija gledanja ostaju sačuvani.</p>
+  </section>
+
+  <footer>
+    MigeCast ne prodaje niti isporučuje TV kanale – koristi listu koju dobijete od svog dobavljača.
+    <br>Provera preuzetog fajla (napredno): u PowerShell-u <code>Get-FileHash .\MigeCast-Setup-*.exe</code> mora prikazati isti SHA-256 kao iznad.
+  </footer>
+</main>
+<script>
+  (function () {
+    function mb(bytes) { return (bytes / 1048576).toFixed(1).replace(".", ",") + " MB"; }
+    var status = document.getElementById("status");
+    fetch("release.json", { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (rel) {
+        if (!rel.version || !rel.url || !/^https:\/\//.test(rel.url)) {
+          status.textContent = "Instalacioni fajl uskoro će biti dostupan.";
+          return;
+        }
+        document.getElementById("version").textContent = rel.version;
+        document.getElementById("size").textContent = mb(rel.size_bytes);
+        document.getElementById("date").textContent = rel.date;
+        document.getElementById("sha").textContent = rel.sha256;
+        var link = document.getElementById("download");
+        link.href = rel.url;
+        link.removeAttribute("aria-disabled");
+        status.textContent = "Fajl: " + rel.file;
+      })
+      .catch(function () { status.textContent = "Podaci o verziji trenutno nisu dostupni. Pokušajte kasnije."; });
+  })();
+</script>
+</body>
+</html>
