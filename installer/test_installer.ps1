@@ -16,7 +16,11 @@
 param(
   [Parameter(Mandatory = $true)][string]$Installer,
   [string]$ReportDir = "installer-test",
-  [int]$MaxWindowMs = 5000
+  # Cold start = first start after installation: Windows reads and virus-scans
+  # every DLL once; the bootloader splash covers this time. Warm start = every
+  # later start; this is what users experience daily.
+  [int]$MaxColdWindowMs = 10000,
+  [int]$MaxWarmWindowMs = 3000
 )
 $ErrorActionPreference = "Stop"
 $Installer = (Resolve-Path $Installer).Path
@@ -49,14 +53,19 @@ function Invoke-App([string]$Name, [string[]]$AppArgs) {
   return $p.ExitCode
 }
 
-function Read-Startup([string]$Name) {
+function Read-Startup([string]$Name, [int]$LimitMs) {
   $file = Join-Path $ReportDir "$Name.json"
   if (-not (Test-Path $file)) { Fail "$($Name): startup report missing" }
   $r = Get-Content $file -Raw | ConvertFrom-Json
   $results[$Name] = $r
-  $shown = [double]$r.window_shown + [double]$r.process_to_python_ms
-  Write-Host ("{0}: process->python {1} ms, window shown {2} ms (since process start)" -f $Name, $r.process_to_python_ms, $shown)
-  if ($shown -gt $MaxWindowMs) { Fail "$($Name): window appeared after $shown ms (limit $MaxWindowMs)" }
+  $offset = [double]$r.process_to_python_ms
+  $shown = [double]$r.window_shown + $offset
+  # Every phase, measured from process start (bootloader included).
+  $phases = ($r.PSObject.Properties | Where-Object { $_.Name -ne "process_to_python_ms" } |
+    ForEach-Object { "{0}={1:N0}" -f $_.Name, ([double]$_.Value + $offset) }) -join "  "
+  Write-Host ("{0}: bootloader {1:N0} ms | {2}" -f $Name, $offset, $phases)
+  if ($null -eq $r.splash_closed) { Write-Host "WARNING: $($Name): bootloader splash was not active" }
+  if ($shown -gt $LimitMs) { Fail "$($Name): window appeared after $([math]::Round($shown)) ms (limit $LimitMs)" }
   return $r
 }
 
@@ -87,7 +96,7 @@ Ok "bundled libVLC $($vlc.libvlc_version)"
 # 3. first start, no database ----------------------------------------------------
 $code = Invoke-App "first-start" @("--smoke-test", "--startup-report", "`"$ReportDir\first-start.json`"")
 if ($code -ne 0) { Fail "first start exit code $code" }
-Read-Startup "first-start" | Out-Null
+Read-Startup "first-start" $MaxColdWindowMs | Out-Null
 if (-not (Test-Path $Db)) { Fail "database not created in $DataDir" }
 if (Test-Path (Join-Path $AppDir "data")) { Fail "user data written into the program folder" }
 Ok "first start creates data in %LOCALAPPDATA%\MigeCast"
@@ -100,7 +109,7 @@ $cfg = Join-Path $DataDir "data\config.json"
 Invoke-Setup @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=$ReportDir\upgrade.log")
 $code = Invoke-App "after-upgrade" @("--smoke-test", "--startup-report", "`"$ReportDir\after-upgrade.json`"")
 if ($code -ne 0) { Fail "start after upgrade exit code $code" }
-Read-Startup "after-upgrade" | Out-Null
+Read-Startup "after-upgrade" $MaxColdWindowMs | Out-Null
 if ((Sql "SELECT count(*) FROM favorite_vod WHERE stream_id='ci-movie'") -ne "1") { Fail "favorite lost on upgrade" }
 if ((Sql "SELECT position_seconds FROM watch_progress WHERE stream_id='ci-ep'") -ne "754") { Fail "watch progress lost on upgrade" }
 if ((Get-Content $cfg -Raw) -notmatch '"light"') { Fail "settings lost on upgrade" }
@@ -119,7 +128,7 @@ Ok "uninstall removes program, keeps user data"
 Invoke-Setup @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/LOG=$ReportDir\install2.log")
 $code = Invoke-App "after-reinstall" @("--smoke-test", "--startup-report", "`"$ReportDir\after-reinstall.json`"")
 if ($code -ne 0) { Fail "start after reinstall exit code $code" }
-Read-Startup "after-reinstall" | Out-Null
+Read-Startup "after-reinstall" $MaxColdWindowMs | Out-Null
 if ((Sql "SELECT count(*) FROM favorite_vod WHERE stream_id='ci-movie'") -ne "1") { Fail "favorite lost after reinstall" }
 Ok "reinstall restores user data"
 
@@ -127,10 +136,11 @@ Ok "reinstall restores user data"
 $times = @()
 foreach ($i in 1..5) {
   Invoke-App "warm-$i" @("--smoke-test", "--startup-report", "`"$ReportDir\warm-$i.json`"") | Out-Null
-  $r = Read-Startup "warm-$i"
+  $r = Read-Startup "warm-$i" $MaxColdWindowMs
   $times += [double]$r.window_shown + [double]$r.process_to_python_ms
 }
 $avg = ($times | Measure-Object -Average).Average
 Write-Host ("Warm start: window shown after {0:N0} ms on average (min {1:N0}, max {2:N0})" -f $avg, ($times | Measure-Object -Minimum).Minimum, ($times | Measure-Object -Maximum).Maximum)
+if ($avg -gt $MaxWarmWindowMs) { Fail ("warm start too slow: {0:N0} ms average (limit {1} ms)" -f $avg, $MaxWarmWindowMs) }
 $results | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $ReportDir "summary.json")
 Ok "all installer tests passed"

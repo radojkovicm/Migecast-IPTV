@@ -49,6 +49,19 @@ def check_vlc(report_file: str) -> int:
     return 0 if report.get("instance_ok") else 3
 
 
+def close_splash():
+    """Close the PyInstaller bootloader splash (only exists in the built app)."""
+    try:
+        import pyi_splash  # noqa: WPS433 - provided by the PyInstaller bootloader
+    except ImportError:
+        return
+    try:
+        pyi_splash.close()
+        startup_profiler.mark("splash_closed")
+    except Exception:
+        pass
+
+
 def install_exception_hook(logger):
     """PyQt6 aborts the whole process when an exception escapes a slot unless a
     custom excepthook is installed. Log the error instead and keep running."""
@@ -114,6 +127,7 @@ def main(argv=None):
         window.showFullScreen()
     app.processEvents()
     startup_profiler.mark("window_shown")
+    close_splash()
 
     from PyQt6.QtCore import QTimer
     QTimer.singleShot(0, window.start)

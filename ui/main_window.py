@@ -51,6 +51,7 @@ class MainWindow(QMainWindow):
         self.current_vod = None
         self.current_series_key = ""
         self._loaded_once = False
+        self._pages_built = False
 
         self.setWindowTitle("MigeCast IPTV")
         self.setMinimumSize(1280, 720)
@@ -117,6 +118,20 @@ class MainWindow(QMainWindow):
         home_layout.addStretch()
         self.stack.addWidget(home)
 
+        self.overlay = LoadingOverlay(root)
+        self.overlay.cancel_requested.connect(self.cancel_loading)
+        self.toast = Toast(root)
+
+    def _ensure_pages(self):
+        """Build the TV, catalog, detail and settings pages.
+
+        Deferred until after the window is visible: creating them (and
+        polishing their style sheets) is the most expensive part of the first
+        start on Windows, when antivirus software scans every Qt DLL.
+        """
+        if self._pages_built:
+            return
+        self._pages_built = True
         # TV page: channel list + embedded player
         from ui.live_tv_widget import LiveTVWidget
         from ui.player_widget import PlayerWidget
@@ -167,16 +182,18 @@ class MainWindow(QMainWindow):
         for page in (self.vod_page, self.series_page, self.vod_detail, self.series_detail, self.settings_page):
             self.stack.addWidget(page)
 
-        self.overlay = LoadingOverlay(root)
-        self.overlay.cancel_requested.connect(self.cancel_loading)
-        self.toast = Toast(root)
+        startup_profiler.mark("pages_built")
 
     def _shortcuts(self):
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.go_back)
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, self._backspace)
-        QShortcut(QKeySequence(Qt.Key.Key_F11), self, self.player_widget.toggle_fullscreen)
+        QShortcut(QKeySequence(Qt.Key.Key_F11), self, self._toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key.Key_PageDown), self, self._next_channel)
         QShortcut(QKeySequence(Qt.Key.Key_PageUp), self, self._previous_channel)
+
+    def _toggle_fullscreen(self):
+        if self._pages_built:
+            self.player_widget.toggle_fullscreen()
 
     def _backspace(self):
         focus = QApplication.focusWidget()
@@ -198,8 +215,9 @@ class MainWindow(QMainWindow):
         name = name or self.config.get("appearance", "theme", "dark")
         themes.set_current(name)
         QApplication.instance().setStyleSheet(themes.generate_stylesheet(name))
-        for view in (self.vod_page.grid, self.series_page.grid, self.series_detail.view, self.live_tv_widget.view):
-            view.viewport().update()
+        if self._pages_built:
+            for view in (self.vod_page.grid, self.series_page.grid, self.series_detail.view, self.live_tv_widget.view):
+                view.viewport().update()
 
     def _apply_player_settings(self):
         self.video_player.max_reconnect_attempts = int(Config().get("player", "reconnect_attempts", 3))
@@ -207,6 +225,7 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ navigation
 
     def go(self, page: int, push: bool = True):
+        self._ensure_pages()
         current = self.stack.currentIndex()
         if current == page:
             return
@@ -225,7 +244,7 @@ class MainWindow(QMainWindow):
             self._update_settings_info()
 
     def go_back(self):
-        if self.overlay.isVisible() or self.player_widget.is_fullscreen:
+        if not self._pages_built or self.overlay.isVisible() or self.player_widget.is_fullscreen:
             return
         if self.stack.currentIndex() == HOME:
             return
@@ -235,6 +254,7 @@ class MainWindow(QMainWindow):
             (self.vod_page if target == VOD else self.series_page).refresh_flags()
 
     def open_section(self, page: int):
+        self._ensure_pages()
         if not self.parsed:
             if self.overlay.isVisible():
                 return
@@ -250,19 +270,24 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ startup
 
     def start(self):
-        """Called right after the window is shown."""
-        self.apply_theme()
-        self.overlay.start("Učitavam listu…", cancellable=False, delay_ms=250)
+        """Called right after the window is shown (the style sheet is already
+        applied in main.py, so it is not applied a second time here)."""
+        themes.set_current(self.config.get("appearance", "theme", "dark"))
         self.home_status.setText("Učitavam listu…")
+        self.overlay.start("Učitavam listu…", cancellable=False)
+        # Database and playlist cache load in a background thread while the
+        # remaining pages are built on the GUI thread.
         from ui.workers import StartupWorker
         self.startup_worker = StartupWorker(self)
         self.startup_worker.progress.connect(self.overlay.text.setText)
         self.startup_worker.finished_ok.connect(self._on_startup_loaded)
         self.startup_worker.failed.connect(self._on_startup_failed)
         self.startup_worker.start()
+        QTimer.singleShot(0, self._ensure_pages)
         QTimer.singleShot(15000, ImageLoader.instance().prune_disk_async)
 
     def _on_startup_loaded(self, playlist, parsed):
+        self._ensure_pages()
         self.playlist = playlist
         if parsed is not None and parsed.total:
             self._show_playlist(parsed)
@@ -281,6 +306,7 @@ class MainWindow(QMainWindow):
         self._finish_startup()
 
     def _on_startup_failed(self, message: str):
+        self._ensure_pages()
         self.overlay.finish()
         self.home_status.setText(message)
         info(self, "Greška", message)
@@ -531,7 +557,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         logger.info("Closing application")
         try:
-            self.player_widget.stop()
+            if self._pages_built:
+                self.player_widget.stop()
         except Exception as exc:
             logger.error("Error stopping player: %s", exc)
         for worker in [self.loader_worker, self.startup_worker, *self.episode_workers.values()]:
