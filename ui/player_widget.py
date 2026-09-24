@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSli
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint
 from PyQt6.QtGui import QKeyEvent, QMouseEvent, QCursor
 from core.video_player import VideoPlayer
+from ui.widgets import later
 from core.db_access import Database
 
 logger = logging.getLogger(__name__)
@@ -429,7 +430,7 @@ class PlayerWidget(QWidget):
         self.video_click_timer.timeout.connect(self._video_single_click_action)
         
         # Install na OVERLAY, ne video_frame
-        QTimer.singleShot(200, lambda: self.click_overlay.installEventFilter(self))
+        QTimer.singleShot(200, self._install_overlay_filter)
         
         # DODAJ: Flag za non-fullscreen double click
         self.normal_click_times = []
@@ -569,8 +570,12 @@ class PlayerWidget(QWidget):
         
         self.set_volume(70)
     
+    def _install_overlay_filter(self):
+        # Bound method (not a lambda): Qt cancels the timer if the widget is deleted.
+        self.click_overlay.installEventFilter(self)
+
     def _setup_vlc_output(self):
-        QTimer.singleShot(200, lambda: self.click_overlay.installEventFilter(self))
+        QTimer.singleShot(200, self._install_overlay_filter)
     
     def _set_vlc_output_internal(self):
         if not self.video_player.media_player:
@@ -1245,7 +1250,7 @@ class PlayerWidget(QWidget):
             resume_pos = self.resume_position_seconds
             self.resume_position_seconds = None
             logger.info(f"Seeking to resume position: {resume_pos}s")
-            QTimer.singleShot(800, lambda: self._seek_to_position(resume_pos))
+            later(self, 800, lambda: self._seek_to_position(resume_pos))
 
         if state == 'ended' and self.content_type in ('vod', 'series') and not self.user_stopped:
             # Natural end of a movie/episode: store it as fully watched.
@@ -1381,7 +1386,7 @@ class PlayerWidget(QWidget):
 
         try:
             # Čekaj da video bude spreman
-            QTimer.singleShot(500, lambda: self._seek_to_position(position_seconds))
+            later(self, 500, lambda: self._seek_to_position(position_seconds))
             logger.info(f"Resume playback from {position_seconds}s")
         except Exception as e:
             logger.error(f"Failed to resume from position: {e}")
