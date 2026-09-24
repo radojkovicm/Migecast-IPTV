@@ -1,8 +1,8 @@
 {
-  "version": "",
-  "file": "",
-  "size_bytes": 0,
-  "sha256": "",
-  "date": "",
-  "url": ""
+  "version": "2.0.0",
+  "file": "MigeCast-Setup-2.0.0.exe",
+  "size_bytes": 72986069,
+  "sha256": "80b3da022eb5285fae0f3738d17700896dac58230dc539d792ad386da9722006",
+  "date": "24.09.2026",
+  "url": "https://github.com/radojkovicm/Migecast-IPTV/releases/download/v2.0.0/MigeCast-Setup-2.0.0.exe"
 }

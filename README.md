@@ -190,7 +190,10 @@ under the reserved `.invalid` TLD) and an isolated data folder
 
 ## License
 
-Third-party components: Qt 6 / PyQt6 (LGPLv3 / GPLv3), libVLC 3 (LGPLv2.1+;
-the VLC license is included as `_internal/vlc/VLC-COPYING.txt`), SQLAlchemy
-(MIT), requests (Apache-2.0), cryptography (Apache-2.0/BSD). Choose and add a
-license for MigeCast itself before publishing the repository.
+MigeCast IPTV is free software, licensed under the
+[GNU General Public License v3.0](LICENSE) (GPL-3.0).
+
+Third-party components included in the installer keep their own licenses:
+Qt 6 / PyQt6 (GPLv3), libVLC 3 (LGPLv2.1+; the VLC license is included as
+`_internal/vlc/VLC-COPYING.txt`), SQLAlchemy (MIT), requests (Apache-2.0) and
+cryptography (Apache-2.0/BSD).

@@ -22,6 +22,7 @@ version_file = ROOT / "build" / "version_info.txt"
 datas = [
     (str(ROOT / "resources" / "migecast.ico"), "resources"),
     (str(ROOT / "resources" / "migecast.png"), "resources"),
+    (str(ROOT / "LICENSE"), "."),  # GPL-3.0 text shipped with the program
     (str(VLC_DIR), "vlc"),  # libVLC + plugins, copied as-is into _internal/vlc
 ]
 
