@@ -1,223 +1,313 @@
-import logging
+"""Poster / logo loading that never blocks the GUI thread.
+
+* Network downloads and disk reads run in a small ``QThreadPool``; workers
+  only touch ``QImage`` (thread-safe), never ``QPixmap``.
+* Each URL is downloaded at most once at a time (de-duplication) and a failed
+  URL is not retried for a while, so a dead image server cannot slow the UI.
+* Requests are LIFO: what the user is looking at right now loads first.
+  ``cancel_queued()`` drops requests for items that are no longer visible.
+* Memory cache: LRU of scaled pixmaps. Disk cache: downscaled JPEG files with
+  a size limit (oldest files are removed first).
+* Views connect once to :attr:`ImageLoader.image_ready` and repaint the rows
+  that use the URL (no per-widget signal connections).
+"""
 import hashlib
-import requests
+import logging
+import os
+import threading
+import time
+from collections import OrderedDict, deque
 from pathlib import Path
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtCore import QThread, pyqtSignal, QObject, QThreadPool, QRunnable, pyqtSlot, Qt
-from io import BytesIO
+from typing import Optional
+
+import requests
+from PyQt6.QtCore import QObject, QRunnable, QSize, Qt, QThreadPool, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
+
+from utils import paths
 
 logger = logging.getLogger(__name__)
 
-
-class ImageDownloadSignals(QObject):
-    """Signals for image download runnable"""
-    image_downloaded = pyqtSignal(str, QPixmap)  # url, pixmap
-    download_failed = pyqtSignal(str, str)  # url, error_message
+MAX_SOURCE_BYTES = 8 * 1024 * 1024
+THUMB_MAX = QSize(360, 540)
+FAILED_RETRY_SECONDS = 15 * 60
 
 
-class ImageDownloadRunnable(QRunnable):
-    """Runnable for downloading images in thread pool"""
-    
-    def __init__(self, url: str, size: tuple, cache_path: Path):
+class DiskImageCache:
+    """Size-bounded folder of cached images (pure Python, thread-safe)."""
+
+    def __init__(self, folder: Path, max_bytes: int = 300 * 1024 * 1024):
+        self.folder = Path(folder)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        self.max_bytes = max_bytes
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def key(url: str) -> str:
+        return hashlib.sha1(url.encode("utf-8", errors="ignore")).hexdigest()
+
+    def path_for(self, url: str) -> Path:
+        return self.folder / f"{self.key(url)}.jpg"
+
+    def get(self, url: str) -> Optional[bytes]:
+        path = self.path_for(url)
+        try:
+            data = path.read_bytes()
+        except OSError:
+            return None
+        try:
+            os.utime(path, None)  # mark as recently used
+        except OSError:
+            pass
+        return data
+
+    def put(self, url: str, data: bytes) -> None:
+        path = self.path_for(url)
+        tmp = path.with_suffix(f".{threading.get_ident()}.tmp")
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, path)
+        except OSError as exc:
+            logger.debug("Disk cache write failed: %s", exc)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+    def size_bytes(self) -> int:
+        return sum(entry.stat().st_size for entry in self.folder.iterdir() if entry.is_file())
+
+    def prune(self, target_ratio: float = 0.8) -> int:
+        """Delete least recently used files until below ``max_bytes``."""
+        with self._lock:
+            try:
+                entries = [(e.stat().st_mtime, e.stat().st_size, e) for e in self.folder.iterdir() if e.is_file()]
+            except OSError:
+                return 0
+            total = sum(size for _, size, _ in entries)
+            if total <= self.max_bytes:
+                return 0
+            removed = 0
+            limit = self.max_bytes * target_ratio
+            for _, size, entry in sorted(entries, key=lambda item: item[0]):
+                if total <= limit:
+                    break
+                try:
+                    entry.unlink()
+                    total -= size
+                    removed += 1
+                except OSError:
+                    pass
+            logger.info("Image cache pruned: %d files removed", removed)
+            return removed
+
+    def clear(self) -> None:
+        for entry in self.folder.iterdir():
+            try:
+                entry.unlink()
+            except OSError:
+                pass
+
+
+class _Bridge(QObject):
+    done = pyqtSignal(str, QImage)
+    failed = pyqtSignal(str)
+
+
+class _LoadTask(QRunnable):
+    def __init__(self, url: str, disk: DiskImageCache, bridge: _Bridge):
         super().__init__()
         self.url = url
-        self.size = size
-        self.cache_path = cache_path
-        self.signals = ImageDownloadSignals()
+        self.disk = disk
+        self.bridge = bridge
         self.setAutoDelete(True)
-    
-    @pyqtSlot()
+
     def run(self):
-        """Download and process image"""
         try:
-            response = requests.get(self.url, timeout=10, headers={
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
-            response.raise_for_status()
-            
-            # Load image
-            pixmap = QPixmap()
-            pixmap.loadFromData(response.content)
-            
-            if not pixmap.isNull():
-                # Save original to disk cache (not scaled)
-                try:
-                    pixmap.save(str(self.cache_path), "PNG")
-                    logger.debug(f"Saved to cache: {self.cache_path}")
-                except Exception as e:
-                    logger.warning(f"Failed to save to cache: {e}")
-                
-                # Scale image for display
-                scaled_pixmap = pixmap.scaled(
-                    self.size[0], self.size[1],
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation
-                )
-                
-                self.signals.image_downloaded.emit(self.url, scaled_pixmap)
+            data = self.disk.get(self.url)
+            image = QImage.fromData(data) if data else QImage()
+            if image.isNull():
+                image = self._download()
+            if image.isNull():
+                self.bridge.failed.emit(self.url)
             else:
-                self.signals.download_failed.emit(self.url, "Pixmap is null after loading")
-        
-        except requests.exceptions.Timeout:
-            self.signals.download_failed.emit(self.url, "Timeout")
-        except requests.exceptions.ConnectionError:
-            self.signals.download_failed.emit(self.url, "Connection error")
-        except requests.exceptions.HTTPError as e:
-            self.signals.download_failed.emit(self.url, f"HTTP {e.response.status_code}")
-        except Exception as e:
-            self.signals.download_failed.emit(self.url, str(e))
+                self.bridge.done.emit(self.url, image)
+        except Exception as exc:  # never let a worker crash the app
+            logger.debug("Image task error: %s", exc)
+            self.bridge.failed.emit(self.url)
+
+    def _download(self) -> QImage:
+        from core.net import session
+        for attempt in range(2):
+            try:
+                with session().get(self.url, timeout=(4, 10), stream=True) as response:
+                    response.raise_for_status()
+                    chunks, total = [], 0
+                    for chunk in response.iter_content(64 * 1024):
+                        chunks.append(chunk)
+                        total += len(chunk)
+                        if total > MAX_SOURCE_BYTES:
+                            return QImage()
+                    data = b"".join(chunks)
+                break
+            except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+                if attempt == 0:
+                    time.sleep(0.5)
+                    continue
+                return QImage()
+            except requests.exceptions.RequestException:
+                return QImage()
+        image = QImage.fromData(data)
+        if image.isNull():
+            return image
+        if image.width() > THUMB_MAX.width() or image.height() > THUMB_MAX.height():
+            image = image.scaled(THUMB_MAX, Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+        from PyQt6.QtCore import QBuffer, QByteArray, QIODevice
+        buffer_bytes = QByteArray()
+        buffer = QBuffer(buffer_bytes)
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        image.save(buffer, "PNG" if image.hasAlphaChannel() else "JPG", 85)
+        buffer.close()
+        self.disk.put(self.url, bytes(buffer_bytes))
+        return image
 
 
-class ImageCache(QObject):
-    """
-    Image cache with thread pool (LIMITED concurrent downloads).
-    
-    CRITICAL: Uses QThreadPool to limit concurrent downloads to prevent
-    system overload when loading thousands of images at once.
-    """
-    
-    image_ready = pyqtSignal(str, QPixmap)  # url, pixmap
-    
-    def __init__(self, max_concurrent_downloads: int = 10):
+class ImageLoader(QObject):
+    """Process wide asynchronous image loader (use :meth:`instance`)."""
+
+    image_ready = pyqtSignal(str)
+    image_failed = pyqtSignal(str)
+
+    _instance = None
+
+    @classmethod
+    def instance(cls) -> "ImageLoader":
+        if cls._instance is None:
+            cls._instance = cls()
+        return cls._instance
+
+    def __init__(self, folder: Optional[Path] = None, max_parallel: int = 6,
+                 max_disk_mb: Optional[int] = None, memory_items: int = 600):
         super().__init__()
-        # Use cache/images folder to match existing structure
-        self.cache_dir = Path('cache/images')
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.memory_cache = {}  # In-memory cache
-        self.pending_downloads = set()  # Track pending URLs
-        self.placeholder = self._create_placeholder()
-        
-        # Thread pool with LIMITED workers (default 10)
-        self.thread_pool = QThreadPool()
-        self.thread_pool.setMaxThreadCount(max_concurrent_downloads)
-        
-        # Count existing cached images
-        cached_count = len(list(self.cache_dir.glob('*.png')))
-        logger.info(f"ImageCache initialized with {max_concurrent_downloads} max concurrent downloads")
-        logger.info(f"Found {cached_count} cached images in {self.cache_dir}")
-    
-    def _create_placeholder(self) -> QPixmap:
-        """Create placeholder pixmap"""
-        pixmap = QPixmap(100, 100)
-        pixmap.fill(0xDDDDDD)  # Light gray for white background
-        return pixmap
-    
-    def get_cache_path(self, url: str) -> Path:
-        """Get cache file path for URL"""
-        url_hash = hashlib.md5(url.encode()).hexdigest()
-        return self.cache_dir / f"{url_hash}.png"
-    
-    def get_image(self, url: str, size: tuple = (100, 100)) -> QPixmap:
-        """
-        Get image from cache or download it.
-        Returns placeholder if image is not in cache and starts download.
-        
-        IMPORTANT: Uses thread pool to limit concurrent downloads.
-        """
+        if max_disk_mb is None:
+            try:
+                from utils.config import Config
+                max_disk_mb = int(Config().get("images", "max_cache_mb", 300))
+            except Exception:
+                max_disk_mb = 300
+        self.disk = DiskImageCache(folder or paths.image_cache_dir(), max_disk_mb * 1024 * 1024)
+        self.pool = QThreadPool(self)
+        self.pool.setMaxThreadCount(max_parallel)
+        self.max_parallel = max_parallel
+        self.bridge = _Bridge()
+        self.bridge.done.connect(self._on_done)
+        self.bridge.failed.connect(self._on_failed)
+        self._images = OrderedDict()   # url -> QImage (source thumbnail)
+        self._scaled = OrderedDict()   # (url, w, h) -> QPixmap
+        self._memory_items = memory_items
+        self._queue = deque()
+        self._queued = set()
+        self._inflight = set()
+        self._failed = {}
+        self._closed = False
+
+    # -- public API ---------------------------------------------------------
+
+    def pixmap(self, url: Optional[str], width: int, height: int) -> Optional[QPixmap]:
+        """Return a cached pixmap scaled to fit ``width``x``height`` or ``None``
+        (and schedule loading). Call from the GUI thread only."""
+        if not url or self._closed:
+            return None
+        key = (url, width, height)
+        cached = self._scaled.get(key)
+        if cached is not None:
+            self._scaled.move_to_end(key)
+            return cached
+        image = self._images.get(url)
+        if image is None:
+            self.request(url)
+            return None
+        self._images.move_to_end(url)
+        scaled = QPixmap.fromImage(image.scaled(width, height, Qt.AspectRatioMode.KeepAspectRatio,
+                                                Qt.TransformationMode.SmoothTransformation))
+        self._scaled[key] = scaled
+        while len(self._scaled) > self._memory_items:
+            self._scaled.popitem(last=False)
+        return scaled
+
+    def get_image(self, url: str, size: tuple = (100, 100)) -> Optional[QPixmap]:
+        """Compatibility wrapper for older call sites."""
+        return self.pixmap(url, size[0], size[1])
+
+    def has_failed(self, url: Optional[str]) -> bool:
         if not url:
-            return self.placeholder
-        
-        # Check memory cache first
-        cache_key = f"{url}_{size[0]}_{size[1]}"
-        if cache_key in self.memory_cache:
-            return self.memory_cache[cache_key]
-        
-        # Check disk cache
-        cache_path = self.get_cache_path(url)
-        if cache_path.exists():
+            return True
+        failed_at = self._failed.get(url)
+        return failed_at is not None and time.monotonic() - failed_at < FAILED_RETRY_SECONDS
+
+    def request(self, url: str) -> None:
+        if (not url or self._closed or url in self._images or url in self._inflight
+                or self.has_failed(url) or not url.lower().startswith(("http://", "https://"))):
+            return
+        if url in self._queued:
             try:
-                pixmap = QPixmap(str(cache_path))
-                if not pixmap.isNull():
-                    # Scale to requested size with correct PyQt6 syntax
-                    scaled_pixmap = pixmap.scaled(
-                        size[0], size[1],
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
-                    # Cache in memory
-                    self.memory_cache[cache_key] = scaled_pixmap
-                    logger.debug(f"Loaded from disk cache: {url}")
-                    return scaled_pixmap
-                else:
-                    logger.warning(f"Cached image is null: {cache_path}")
-            except Exception as e:
-                logger.warning(f"Failed to load cached image {cache_path}: {e}")
-        
-        # Start download if not already downloading
-        if url not in self.pending_downloads:
-            self.pending_downloads.add(url)
-            
-            # Create runnable
-            runnable = ImageDownloadRunnable(url, size, cache_path)
-            runnable.signals.image_downloaded.connect(
-                lambda u, p: self._on_image_downloaded(u, p, size)
-            )
-            runnable.signals.download_failed.connect(self._on_download_failed)
-            
-            # Submit to thread pool (will queue if pool is full)
-            self.thread_pool.start(runnable)
-            logger.debug(f"Started download for: {url}")
-        
-        # Return placeholder while downloading
-        return self.placeholder
-    
-    def _on_image_downloaded(self, url: str, pixmap: QPixmap, size: tuple):
-        """Handle downloaded image"""
-        # Save to memory cache
-        cache_key = f"{url}_{size[0]}_{size[1]}"
-        self.memory_cache[cache_key] = pixmap
-        
-        # Remove from pending
-        self.pending_downloads.discard(url)
-        
-        # Emit signal
-        self.image_ready.emit(url, pixmap)
-        
-        logger.info(f"Image downloaded: {url}")
-    
-    def _on_download_failed(self, url: str, error: str):
-        """Handle download failure"""
-        self.pending_downloads.discard(url)
-        logger.warning(f"Download failed for {url}: {error}")
-    
-    def clear_cache(self):
-        """Clear all cached images"""
-        self.memory_cache.clear()
-        
-        # Delete disk cache
-        for cache_file in self.cache_dir.glob('*.png'):
-            try:
-                cache_file.unlink()
-            except Exception as e:
-                logger.error(f"Failed to delete cache file {cache_file}: {e}")
-        
-        logger.info("Image cache cleared")
-    
-    def cleanup(self):
-        """Cleanup all active downloads and thread pool"""
-        logger.info("Starting ImageCache cleanup...")
-        
-        # Clear pending downloads
-        self.pending_downloads.clear()
-        
-        # Wait for thread pool to finish (with timeout)
-        if self.thread_pool:
-            logger.info(f"Waiting for {self.thread_pool.activeThreadCount()} active downloads to finish...")
-            self.thread_pool.waitForDone(3000)  # Wait max 3 seconds
-            
-            # Force clear if still running
-            if self.thread_pool.activeThreadCount() > 0:
-                logger.warning(f"Force clearing {self.thread_pool.activeThreadCount()} remaining downloads")
-                self.thread_pool.clear()
-        
-        logger.info("ImageCache cleanup completed")
-    
-    def get_stats(self) -> dict:
-        """Get cache statistics"""
-        return {
-            'memory_cached': len(self.memory_cache),
-            'pending_downloads': len(self.pending_downloads),
-            'active_threads': self.thread_pool.activeThreadCount() if self.thread_pool else 0,
-            'max_threads': self.thread_pool.maxThreadCount() if self.thread_pool else 0,
-            'disk_cached': len(list(self.cache_dir.glob('*.png')))
-        }
+                self._queue.remove(url)
+            except ValueError:
+                pass
+        self._queued.add(url)
+        self._queue.append(url)  # LIFO: newest first
+        self._pump()
+
+    def cancel_queued(self) -> None:
+        """Forget requests that have not started yet (e.g. after scrolling away)."""
+        self._queue.clear()
+        self._queued.clear()
+
+    def pending_count(self) -> int:
+        return len(self._queue) + len(self._inflight)
+
+    def prune_disk_async(self) -> None:
+        threading.Thread(target=self.disk.prune, name="image-cache-prune", daemon=True).start()
+
+    def clear_cache(self) -> None:
+        self._images.clear()
+        self._scaled.clear()
+        self._failed.clear()
+        self.disk.clear()
+
+    def cleanup(self) -> None:
+        self._closed = True
+        self.cancel_queued()
+        self.pool.clear()
+        self.pool.waitForDone(2000)
+
+    # -- internals -------------------------------------------------------------
+
+    def _pump(self):
+        while self._queue and len(self._inflight) < self.max_parallel:
+            url = self._queue.pop()
+            self._queued.discard(url)
+            self._inflight.add(url)
+            self.pool.start(_LoadTask(url, self.disk, self.bridge))
+
+    def _on_done(self, url: str, image: QImage):
+        self._inflight.discard(url)
+        if self._closed:
+            return
+        self._images[url] = image
+        while len(self._images) > self._memory_items:
+            self._images.popitem(last=False)
+        self.image_ready.emit(url)
+        self._pump()
+
+    def _on_failed(self, url: str):
+        self._inflight.discard(url)
+        self._failed[url] = time.monotonic()
+        if not self._closed:
+            self.image_failed.emit(url)
+            self._pump()
+
+
+# Backwards compatible name used by older modules.
+ImageCache = ImageLoader

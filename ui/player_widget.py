@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QSli
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPoint
 from PyQt6.QtGui import QKeyEvent, QMouseEvent, QCursor
 from core.video_player import VideoPlayer
-from core.database import Database
+from ui.widgets import later
+from core.db_access import Database
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,7 @@ class FullscreenControls(QWidget):
         self.volume_slider.valueChanged.connect(self.volume_changed.emit)
         control_layout.addWidget(self.volume_slider)
         
-        exit_btn = QPushButton("⛶ Izađi (ESC)")
+        exit_btn = QPushButton("⬅ Nazad (ESC)")
         exit_btn.setStyleSheet("font-size: 16pt; padding: 10px 20px; background-color: #333; color: white; border: none; border-radius: 5px;")
         exit_btn.clicked.connect(self.exit_fullscreen_clicked.emit)
         control_layout.addWidget(exit_btn)
@@ -382,6 +383,7 @@ class PlayerWidget(QWidget):
     """Video player widget with controls"""
     
     previous_requested = pyqtSignal()
+    playback_finished = pyqtSignal(str)  # content type; emitted when a VOD/episode reached its end
     next_requested = pyqtSignal()
     playback_exited = pyqtSignal()  # Emitted when user exits playback
     auto_play_next_episode = pyqtSignal()  # Emitted when auto-play should trigger
@@ -389,7 +391,7 @@ class PlayerWidget(QWidget):
     def __init__(self, video_player: VideoPlayer, parent=None):
         super().__init__(parent)
         self.video_player = video_player
-        self.db = Database()  # NOVO - database za Continue Watching
+        self._db = None  # opened lazily: never touch the database during startup
         self.is_fullscreen = False
         self.is_playing = False
         self.fullscreen_window = None
@@ -428,7 +430,7 @@ class PlayerWidget(QWidget):
         self.video_click_timer.timeout.connect(self._video_single_click_action)
         
         # Install na OVERLAY, ne video_frame
-        QTimer.singleShot(200, lambda: self.click_overlay.installEventFilter(self))
+        QTimer.singleShot(200, self._install_overlay_filter)
         
         # DODAJ: Flag za non-fullscreen double click
         self.normal_click_times = []
@@ -438,8 +440,7 @@ class PlayerWidget(QWidget):
         self.autoplay_triggered = False
         self.user_stopped = False  # Flag to prevent auto-play after manual stop
         
-        # PROMENI: Pokreni mouse polling UVEK (ne samo u fullscreen)
-        self.mouse_poll_timer.start()
+        # Mouse polling runs only while something is playing (see play_url/stop)
         # End detection timer for auto-play
         self.end_detection_timer = QTimer()
         self.end_detection_timer.timeout.connect(self._check_episode_end)
@@ -569,8 +570,12 @@ class PlayerWidget(QWidget):
         
         self.set_volume(70)
     
+    def _install_overlay_filter(self):
+        # Bound method (not a lambda): Qt cancels the timer if the widget is deleted.
+        self.click_overlay.installEventFilter(self)
+
     def _setup_vlc_output(self):
-        QTimer.singleShot(200, lambda: self.click_overlay.installEventFilter(self))
+        QTimer.singleShot(200, self._install_overlay_filter)
     
     def _set_vlc_output_internal(self):
         if not self.video_player.media_player:
@@ -788,7 +793,7 @@ class PlayerWidget(QWidget):
         self.fullscreen_controls.show_with_timer()
         
         # NOVO: Pozicioniraj title na vrh centar
-        if hasattr(self, 'title_overlay') and self.current_content_title:
+        if self._title_ok() and self.current_content_title:
             self.title_overlay.setText(self.current_content_title)
             self.title_overlay.adjustSize()
             title_x = (w - self.title_overlay.width()) // 2
@@ -862,7 +867,9 @@ class PlayerWidget(QWidget):
         if self.fullscreen_window:
             self.fullscreen_window.close()
             self.fullscreen_window = None
-        
+
+        if self.is_playing:
+            self.mouse_poll_timer.start()  # keep double-click-to-fullscreen working for TV
         logger.info("Fullscreen exited")
     
     def _exit_fullscreen_and_stop(self):
@@ -932,11 +939,15 @@ class PlayerWidget(QWidget):
             self.time_label.setText("00:00")
             self.duration_label.setText("00:00")
             
-            self.video_player.play(url)
+            if not self.video_player.play(url):
+                self.status_label.setText("Video plejer nije dostupan")
+                self.is_playing = False
+                return
+            self.mouse_poll_timer.start()
             self.is_playing = True
             self.play_btn.setText("⏸")
             self.fullscreen_controls.set_playing(True)
-            self.status_label.setText("Reprodukcija...")
+            self.status_label.setText("Povezujem se…")
             self.position_timer.start()
 
             # NOVO - Pokreni tracking za Continue Watching
@@ -958,7 +969,7 @@ class PlayerWidget(QWidget):
             self.is_playing = False
         self.current_content_title = content_title or ""
         # Ako je već fullscreen, osveži title odmah
-        if self.is_fullscreen and hasattr(self, 'title_overlay'):
+        if self.is_fullscreen and self._title_ok():
             if self.current_content_title:
                 self.title_overlay.setText(self.current_content_title)
                 self.title_overlay.adjustSize()
@@ -999,6 +1010,8 @@ class PlayerWidget(QWidget):
             self.progress_save_timer.stop()
 
             self.video_player.stop()
+            if not self.is_fullscreen:
+                self.mouse_poll_timer.stop()
             self.is_playing = False
             self.play_btn.setText("▶")
             self.fullscreen_controls.set_playing(False)
@@ -1214,33 +1227,53 @@ class PlayerWidget(QWidget):
         except Exception as e:
             logger.error(f"Error checking episode end: {e}")
     
+    @property
+    def db(self):
+        if self._db is None:
+            self._db = Database()
+        return self._db
+
     def _on_video_state_changed(self, state: str):
-        """Handle VLC video state changes"""
+        """Handle VLC state changes (already marshalled to the GUI thread)."""
         logger.info(f"Video state changed: {state}")
+        messages = {"playing": "Reprodukcija", "paused": "Pauzirano", "reconnecting": "Ponovno povezivanje…",
+                    "error": "Greška: kanal ili video trenutno nije dostupan", "ended": "Kraj"}
+        if state in messages:
+            self.status_label.setText(messages[state])
+            if self.is_fullscreen and self._title_ok() and state in ("reconnecting", "error"):
+                self.title_overlay.setText(messages[state])
+                self.title_overlay.adjustSize()
+                self.title_overlay.show()
+                self.title_overlay.raise_()
 
-        # Handle resume playback when media starts playing
-        if state == 'playing' and hasattr(self, 'resume_position_seconds') and self.resume_position_seconds:
-            # Seek to resume position
-            logger.info(f"Seeking to resume position: {self.resume_position_seconds}s")
-            # Schedule seek after a delay to ensure media is fully loaded
+        if state == 'playing' and getattr(self, 'resume_position_seconds', None):
             resume_pos = self.resume_position_seconds
-            QTimer.singleShot(2000, lambda: self._seek_to_position(resume_pos))
-            # Clear resume position so it doesn't trigger again
             self.resume_position_seconds = None
+            logger.info(f"Seeking to resume position: {resume_pos}s")
+            later(self, 800, lambda: self._seek_to_position(resume_pos))
 
-        # Only auto-play if:
-        # 1. Video naturally finished (stopped state)
-        # 2. Next episode info is available
-        # 3. Content type is series
-        # 4. User didn't manually stop the video
-        if state == 'stopped' and self.next_episode_info and self.content_type == 'series' and not self.user_stopped:
-            logger.info(f"Video finished - auto-playing next episode")
-            # Stop current playback and immediately play next episode
-            self.stop()
-            logger.info("Emitting auto_play_next_episode signal")
-            self.auto_play_next_episode.emit()
-        elif state == 'stopped' and self.user_stopped:
-            logger.info("Video stopped by user - auto-play disabled")
+        if state == 'ended' and self.content_type in ('vod', 'series') and not self.user_stopped:
+            # Natural end of a movie/episode: store it as fully watched.
+            stream_id = self.current_stream_id
+            try:
+                duration = max(1, self.video_player.media_player.get_length() // 1000)
+            except Exception:
+                duration = 1
+            if stream_id:
+                self.db.update_watch_progress(stream_id, self.content_type, self.current_stream_title,
+                                              duration, duration)
+            has_next = self.content_type == 'series' and bool(self.next_episode_info)
+            self.progress_save_timer.stop()
+            self.is_playing = False
+            self.current_stream_id = None  # do not overwrite the "completed" progress on stop()
+            self.playback_finished.emit(self.content_type)
+            if has_next:
+                logger.info("Episode finished - auto-playing next episode")
+                self.auto_play_next_episode.emit()
+            else:
+                self.stop()
+                self.exit_fullscreen()
+                self.playback_exited.emit()
 
     def _trigger_autoplay(self):
         """Trigger auto-play for next episode"""
@@ -1301,13 +1334,20 @@ class PlayerWidget(QWidget):
             self._show_cursor()
             self.fullscreen_controls.show_with_timer()
 
+    def _title_ok(self) -> bool:
+        """The title label lives in the fullscreen window, which is destroyed
+        when fullscreen ends; timers may still fire afterwards."""
+        from PyQt6 import sip
+        overlay = getattr(self, "title_overlay", None)
+        return overlay is not None and not sip.isdeleted(overlay)
+
     def _show_title_overlay(self):
-        if hasattr(self, 'title_overlay') and self.current_content_title:
+        if self._title_ok() and self.current_content_title:
             self.title_overlay.show()
             self.title_overlay.raise_()
 
     def _hide_title_overlay(self):
-        if hasattr(self, 'title_overlay'):
+        if self._title_ok():
             self.title_overlay.hide()
     # ============================================================
     # CONTINUE WATCHING - Watch Progress Tracking
@@ -1353,7 +1393,7 @@ class PlayerWidget(QWidget):
 
         try:
             # Čekaj da video bude spreman
-            QTimer.singleShot(500, lambda: self._seek_to_position(position_seconds))
+            later(self, 500, lambda: self._seek_to_position(position_seconds))
             logger.info(f"Resume playback from {position_seconds}s")
         except Exception as e:
             logger.error(f"Failed to resume from position: {e}")

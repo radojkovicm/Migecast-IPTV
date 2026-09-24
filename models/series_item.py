@@ -4,28 +4,37 @@ from typing import Optional
 
 @dataclass
 class SeriesItem:
-    """TV Series item model"""
-    
+    """TV series episode (or, for Xtream accounts, a series whose episodes
+    are fetched on demand - then ``xtream_series_id`` is set and ``url`` is
+    empty)."""
+
     stream_id: str
     name: str
     url: str
-    cover: Optional[str] = None  # Poster/cover image URL
-    plot: Optional[str] = None  # Description
-    rating: Optional[str] = None  # Rating (e.g., "8.5")
-    year: Optional[str] = None  # Release year
-    genre: Optional[str] = None  # Genre
-    director: Optional[str] = None  # Director name
-    cast: Optional[str] = None  # Cast list
-    category: Optional[str] = None  # Category name
-    season: Optional[str] = None  # Season number
-    episode: Optional[str] = None  # Episode number
-    
+    cover: Optional[str] = None
+    plot: Optional[str] = None
+    rating: Optional[str] = None
+    year: Optional[str] = None
+    genre: Optional[str] = None
+    director: Optional[str] = None
+    cast: Optional[str] = None
+    category: Optional[str] = None
+    season: Optional[str] = None
+    episode: Optional[str] = None
+    series_name: Optional[str] = None
+    xtream_series_id: Optional[str] = None
+    episode_title: Optional[str] = None
+
     def __post_init__(self):
-        """Validate and process fields after initialization"""
-        # Ensure stream_id is string
         if self.stream_id is not None:
             self.stream_id = str(self.stream_id)
-        
-        # Clean up name
         if self.name:
             self.name = self.name.strip()
+        if self.season is not None:
+            self.season = str(self.season)
+        if self.episode is not None:
+            self.episode = str(self.episode)
+
+    @property
+    def is_series_stub(self) -> bool:
+        return bool(self.xtream_series_id) and not self.url

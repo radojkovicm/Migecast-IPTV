@@ -1,812 +1,572 @@
+"""Main window: header, home tiles and all pages inside one window.
+
+Startup is asynchronous: the window is shown immediately, the database and
+the cached playlist are loaded by :class:`ui.workers.StartupWorker` while a
+large "Učitavam listu…" message is visible. Nothing heavy runs on the GUI
+thread and VLC is initialised only when the first video starts.
+"""
 import logging
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                    QPushButton, QLabel, QStatusBar, QMessageBox, QStackedWidget)
+import os
+from datetime import datetime, timedelta
+from typing import List, Optional
+
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, QStackedWidget,
+                             QVBoxLayout, QWidget)
+
+from core.m3u import episode_code
+
 from core.video_player import VideoPlayer
-from core.database import Database
-from ui.settings_dialog import SettingsDialog
-from models.channel import Channel
-from models.vod_item import VODItem
-from models.series_item import SeriesItem
-from utils.themes import generate_stylesheet
+from ui.widgets import LoadingOverlay, Toast, ask, button, info, label, later
+from utils import startup_profiler, themes
 from utils.config import Config
-from utils.error_messages import get_user_friendly_error
+from utils.image_cache import ImageLoader
 
 logger = logging.getLogger(__name__)
 
+HOME, TV, VOD, SERIES, VOD_DETAIL, SERIES_DETAIL, SETTINGS = range(7)
+CRUMBS = {
+    HOME: "Početna", TV: "Početna › 📺 TV", VOD: "Početna › 🎬 Filmovi", SERIES: "Početna › 📺 Serije",
+    VOD_DETAIL: "Početna › 🎬 Filmovi › Detalji", SERIES_DETAIL: "Početna › 📺 Serije › Serija",
+    SETTINGS: "Početna › ⚙ Podešavanja",
+}
+
 
 class MainWindow(QMainWindow):
-    """Main application window"""
-    
-    def __init__(self, video_player: VideoPlayer, database: Database):
+    def __init__(self, video_player: Optional[VideoPlayer] = None, database=None, smoke_test: bool = False):
         super().__init__()
-        self.video_player = video_player
-        self.db = database
-        self.current_playlist_data = None
-        self.current_mode = 'menu'
-        self.previous_mode = 'tv'  # Track the mode before playback for proper return
-        self.current_detail_dialog = None  # Keep reference to detail dialog during playback
-        
-        # Track current series episodes for auto-play
-        self.current_series_episodes = []
-        self.current_episode_index = 0
-        
-        from ui.player_widget import PlayerWidget
-        from ui.live_tv_widget import LiveTVWidget
-        from ui.vod_widget import VODWidget
-        from ui.series_widget import SeriesWidget
-        
-        self.PlayerWidget = PlayerWidget
-        self.LiveTVWidget = LiveTVWidget
-        self.VODWidget = VODWidget
-        self.SeriesWidget = SeriesWidget
-        
-        self.init_ui()
-        self.setup_shortcuts()
-        
-        # VideoPlayer double click connection
-        # Double click connection (koristi PlayerWidget koji već radi)
-        self.player_widget.video_frame.double_clicked.connect(self.on_video_double_click)
+        self.config = Config()
+        self.video_player = video_player or VideoPlayer(int(self.config.get("player", "reconnect_attempts", 3)))
+        self.smoke_test = smoke_test
+        self.playlist: Optional[dict] = None
+        self.parsed = None
+        self.history: List[int] = []
+        self.loader_worker = None
+        self.startup_worker = None
+        self.episode_workers = {}
+        self.episode_cache = {}
+        self.series_queue = []
+        self.series_index = -1
+        self.current_vod = None
+        self.current_series_key = ""
+        self._loaded_once = False
+        self._pages_built = False
 
-        # Apply saved theme settings
-        self.apply_theme()
-
-        QTimer.singleShot(100, self.check_saved_playlist)
-    
-    def init_ui(self):
-        """Initialize UI"""
         self.setWindowTitle("MigeCast IPTV")
         self.setMinimumSize(1280, 720)
-        
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        main_layout = QVBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-        
-        # Top bar
-        top_bar = QWidget()
-        top_bar.setStyleSheet("background-color: #1e1e1e; padding: 10px;")
-        top_bar_layout = QHBoxLayout(top_bar)
-        
-        title_label = QLabel("📺 MigeCast IPTV")
-        title_label.setStyleSheet("font-size: 20pt; font-weight: bold; color: white;")
-        top_bar_layout.addWidget(title_label)
-        
-        top_bar_layout.addStretch()
-        
-        # Breadcrumb label
-        self.breadcrumb_label = QLabel("Početna")
-        self.breadcrumb_label.setStyleSheet("font-size: 14pt; color: #aaa;")
-        top_bar_layout.addWidget(self.breadcrumb_label)
-        
-        top_bar_layout.addStretch()
-        
-        self.back_btn = QPushButton("⬅️ Nazad")
-        self.back_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 14pt; 
-                padding: 8px 16px; 
-                background-color: #333; 
-                color: white; 
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #4CAF50;
-            }
-        """)
-        self.back_btn.clicked.connect(self.show_menu)
+        self._build()
+        self._shortcuts()
+        startup_profiler.mark("main_window_built")
+
+    # ------------------------------------------------------------------ UI
+
+    def _build(self):
+        root = QWidget()
+        root.setObjectName("Root")
+        self.setCentralWidget(root)
+        layout = QVBoxLayout(root)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        header = QWidget()
+        header.setObjectName("Header")
+        header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(24, 12, 20, 12)
+        header_layout.setSpacing(14)
+        title = QLabel("📺 MigeCast IPTV")
+        title.setObjectName("AppTitle")
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        self.breadcrumb = QLabel(CRUMBS[HOME])
+        self.breadcrumb.setObjectName("Breadcrumb")
+        header_layout.addWidget(self.breadcrumb)
+        header_layout.addStretch()
+        self.back_btn = button("⬅  Nazad", "nav", self.go_back, 170)
         self.back_btn.hide()
-        top_bar_layout.addWidget(self.back_btn)
-        
-        settings_btn = QPushButton("⚙️ Podešavanja")
-        settings_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 14pt; 
-                padding: 8px 16px; 
-                background-color: #333; 
-                color: white; 
-                border: none;
-                border-radius: 5px;
-            }
-            QPushButton:hover {
-                background-color: #555;
-            }
-        """)
-        settings_btn.clicked.connect(self.show_settings)
-        top_bar_layout.addWidget(settings_btn)
+        self.settings_btn = button("⚙  Podešavanja", "nav", lambda: self.go(SETTINGS), 230)
+        self.exit_btn = button("✖  Izlaz", "exit", self.close, 150)
+        header_layout.addWidget(self.back_btn)
+        header_layout.addWidget(self.settings_btn)
+        header_layout.addWidget(self.exit_btn)
+        layout.addWidget(header)
 
-        # Exit button
-        close_btn = QPushButton("❌")
-        close_btn.setStyleSheet("""
-            QPushButton {
-                font-size: 16pt; 
-                padding: 8px 12px; 
-                background-color: #f44336; 
-                color: white; 
-                border: none;
-                border-radius: 5px;
-                min-width: 40px;
-            }
-            QPushButton:hover {
-                background-color: #d32f2f;
-            }
-        """)
-        close_btn.clicked.connect(self.close)
-        top_bar_layout.addWidget(close_btn)
-        
-        main_layout.addWidget(top_bar)
-         
-        # Stacked widget for menu and content
-        self.stacked_widget = QStackedWidget()
-        main_layout.addWidget(self.stacked_widget)
-        
-        # Menu page
-        self.menu_page = QWidget()
-        self.menu_page.setStyleSheet("background-color: #1e1e1e; color: white;")
-        menu_layout = QVBoxLayout(self.menu_page)
-        menu_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack, 1)
 
-        menu_title = QLabel("")
-        menu_title.setStyleSheet("font-size: 1pt; color: white; margin-bottom: 40px;")
-        menu_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        menu_layout.addWidget(menu_title)
+        # Home: the three big tiles stay exactly where they were.
+        home = QWidget()
+        home.setObjectName("Page")
+        home_layout = QVBoxLayout(home)
+        home_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        home_layout.addStretch()
+        tiles = QHBoxLayout()
+        tiles.setSpacing(40)
+        tiles.addStretch()
+        self.tv_btn = button("📺\nTV", "tile", lambda: self.open_section(TV))
+        self.vod_btn = button("🎬\nFilmovi", "tile", lambda: self.open_section(VOD))
+        self.series_btn = button("📺\nSerije", "tile", lambda: self.open_section(SERIES))
+        for tile in (self.tv_btn, self.vod_btn, self.series_btn):
+            tiles.addWidget(tile)
+        tiles.addStretch()
+        home_layout.addLayout(tiles)
+        self.home_status = label("", "h2", wrap=True)
+        self.home_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        home_layout.addSpacing(30)
+        home_layout.addWidget(self.home_status)
+        home_layout.addStretch()
+        self.stack.addWidget(home)
 
-        menu_layout.addStretch()
+        self.overlay = LoadingOverlay(root)
+        self.overlay.cancel_requested.connect(self.cancel_loading)
+        self.toast = Toast(root)
 
-        # zajednički stil za sva tri dugmeta
-        button_style = """
-            QPushButton {
-                font-size: 22pt;
-                min-width: 220px;
-                min-height: 220px;
-                padding: 10px;
-                background-color: #444;
-                color: white;
-                border: none;
-                border-radius: 20px;
-            }
-            QPushButton:hover {
-                background-color: #4CAF50;
-            }
+    def _ensure_pages(self):
+        """Build the TV, catalog, detail and settings pages.
+
+        Deferred until after the window is visible: creating them (and
+        polishing their style sheets) is the most expensive part of the first
+        start on Windows, when antivirus software scans every Qt DLL.
         """
-
-        # red sa dugmadima (jedno pored drugog)
-        buttons_row = QHBoxLayout()
-        buttons_row.setSpacing(40)
-
-        self.tv_btn = QPushButton("📺 TV")
-        self.tv_btn.setStyleSheet(button_style)
-        self.tv_btn.clicked.connect(lambda: self.show_category('tv'))
-        buttons_row.addWidget(self.tv_btn)
-
-        self.vod_btn = QPushButton("🎬 Filmovi")
-        self.vod_btn.setStyleSheet(button_style)
-        self.vod_btn.clicked.connect(lambda: self.show_category('vod'))
-        buttons_row.addWidget(self.vod_btn)
-
-        self.series_btn = QPushButton("📺 Serije")
-        self.series_btn.setStyleSheet(button_style)
-        self.series_btn.clicked.connect(lambda: self.show_category('series'))
-        buttons_row.addWidget(self.series_btn)
-
-        menu_layout.addLayout(buttons_row)
-        menu_layout.addStretch()
-
-        
-        self.stacked_widget.addWidget(self.menu_page)
-        
-        # Content page - sa nested QStackedWidget za kategorije
-        self.content_page = QWidget()
-        content_layout = QHBoxLayout(self.content_page)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-        
-        # Category stacked widget (zamena za QTabWidget)
-        self.category_stack = QStackedWidget()
-        
-        # TV category (sa player-om)
-        tv_container = QWidget()
-        tv_layout = QHBoxLayout(tv_container)
+        if self._pages_built:
+            return
+        self._pages_built = True
+        # TV page: channel list + embedded player
+        from ui.live_tv_widget import LiveTVWidget
+        from ui.player_widget import PlayerWidget
+        tv = QWidget()
+        tv.setObjectName("Page")
+        tv_layout = QHBoxLayout(tv)
         tv_layout.setContentsMargins(0, 0, 0, 0)
         tv_layout.setSpacing(0)
-        
-        self.live_tv_widget = self.LiveTVWidget()
+        self.live_tv_widget = LiveTVWidget()
+        self.live_tv_widget.setMaximumWidth(560)
+        self.live_tv_widget.setMinimumWidth(420)
         self.live_tv_widget.channel_selected.connect(self.play_channel)
-        self.live_tv_widget.setMaximumWidth(500)
         tv_layout.addWidget(self.live_tv_widget)
-        
-        self.player_widget = self.PlayerWidget(self.video_player, self)
+        self.player_widget = PlayerWidget(self.video_player, self)
         self.player_widget.setMinimumWidth(640)
-        self.player_widget.previous_requested.connect(self.play_previous)
-        self.player_widget.next_requested.connect(self.play_next)
+        self.player_widget.previous_requested.connect(self.live_tv_widget.select_previous_channel)
+        self.player_widget.next_requested.connect(self.live_tv_widget.select_next_channel)
         self.player_widget.playback_exited.connect(self.on_playback_exited)
-        self.player_widget.auto_play_next_episode.connect(self.play_next_series_episode)
-        tv_layout.addWidget(self.player_widget, stretch=1)
-        
-        self.category_stack.addWidget(tv_container)  # Index 0 - TV
-        
-        # VOD category (bez player-a)
-        self.vod_widget = self.VODWidget()
-        self.vod_widget.vod_selected.connect(self.play_vod)
-        self.category_stack.addWidget(self.vod_widget)  # Index 1 - VOD
-        
-        # Series category (bez player-a)
-        self.series_widget = self.SeriesWidget()
-        self.series_widget.series_selected.connect(self.play_series)
-        self.category_stack.addWidget(self.series_widget)  # Index 2 - Series
-        
-        content_layout.addWidget(self.category_stack)
-        
-        self.stacked_widget.addWidget(self.content_page)
-        
-        # Initially show menu
-        self.stacked_widget.setCurrentIndex(0)
-        
-        # Status bar
-        self.status_bar = QStatusBar()
-        self.setStatusBar(self.status_bar)
-        self.status_bar.showMessage("")
-        
-        logger.info("Main window initialized")
-    
-    def show_menu(self):
-        """Show main menu"""
-        # Stop TV stream (ali asinhrono) - VOD/Series ne diraj
-        if self.video_player and self.current_mode == 'tv':
-            logger.info("Stopping TV stream before returning to menu (async)")
-            QTimer.singleShot(0, self.video_player.stop)
-        
-        self.stacked_widget.setCurrentIndex(0)
-        self.back_btn.hide()
-        self.breadcrumb_label.setText("Početna")
-        self.current_mode = 'menu'
-    
-    def on_playback_exited(self):
-        """Handle user exiting from playback - return to the detail dialog or category"""
-        logger.info(f"Playback exited - stopping player (async)")
-        
-        # Exit fullscreen if still in fullscreen
-        if self.player_widget.isFullScreen():
-            self.player_widget.exit_fullscreen()
-        
-        # Asinhrono stop-uj VLC player da ne blokira GUI
-        if self.video_player:
-            QTimer.singleShot(0, self.video_player.stop)
-        
-        # Asinhrono stop-uj PlayerWidget
-        QTimer.singleShot(50, self.player_widget.stop)
-        
-        # Add small delay to ensure player stops
-        QTimer.singleShot(100, self._complete_playback_exit)
+        self.player_widget.playback_finished.connect(self.on_playback_finished)
+        self.player_widget.auto_play_next_episode.connect(self.play_next_episode)
+        self.player_widget.video_frame.double_clicked.connect(self.player_widget.toggle_fullscreen)
+        tv_layout.addWidget(self.player_widget, 1)
+        self.stack.addWidget(tv)
 
-    def _complete_playback_exit(self):
-        """Complete the playback exit process after player has stopped"""
-        # If we have a detail dialog, bring it back to front
-        if self.current_detail_dialog:
-            logger.info("Returning to detail dialog")
-            # Return to category view to show the dialog properly
-            self.stacked_widget.setCurrentIndex(1)
+        from ui.catalog_page import SeriesPage, VODPage
+        from ui.series_detail_page import SeriesDetailPage
+        from ui.settings_page import SettingsPage
+        from ui.vod_detail_page import VODDetailPage
+        self.vod_page = VODPage()
+        self.vod_page.item_selected.connect(self.open_vod)
+        self.series_page = SeriesPage()
+        self.series_page.item_selected.connect(self.open_series)
+        self.vod_detail = VODDetailPage()
+        self.vod_detail.back_requested.connect(self.go_back)
+        self.vod_detail.play_requested.connect(self.play_vod)
+        self.vod_detail.changed.connect(self.vod_page.refresh_flags)
+        self.series_detail = SeriesDetailPage()
+        self.series_detail.back_requested.connect(self.go_back)
+        self.series_detail.play_requested.connect(self.play_episode)
+        self.series_detail.retry_requested.connect(lambda: self._load_xtream_episodes(self.current_series_key, force=True))
+        self.series_detail.changed.connect(self.series_page.refresh_flags)
+        self.settings_page = SettingsPage()
+        self.settings_page.load_requested.connect(self.load_playlist)
+        self.settings_page.refresh_requested.connect(lambda: self.refresh_playlist(silent=False))
+        self.settings_page.theme_changed.connect(self.apply_theme)
+        self.settings_page.import_requested.connect(self.import_old_database)
+        self.settings_page.player_settings_changed.connect(self._apply_player_settings)
+        for page in (self.vod_page, self.series_page, self.vod_detail, self.series_detail, self.settings_page):
+            self.stack.addWidget(page)
 
-            # Refresh buttons/episodes to show updated watch progress
-            if hasattr(self.current_detail_dialog, 'refresh_buttons'):
-                self.current_detail_dialog.refresh_buttons()  # VOD dialog
-            elif hasattr(self.current_detail_dialog, 'refresh_episodes'):
-                self.current_detail_dialog.refresh_episodes()  # Series dialog
+        startup_profiler.mark("pages_built")
 
-            # Ensure dialog is visible and on top
-            self.current_detail_dialog.setVisible(True)
-            self.current_detail_dialog.show()
-            self.current_detail_dialog.raise_()
-            self.current_detail_dialog.activateWindow()
-            self.current_detail_dialog.setFocus()
-        else:
-            # Otherwise return to the category view
-            logger.info(f"Returning to {self.previous_mode} category")
-            self.show_category(self.previous_mode)
-    
-    def show_category(self, mode: str):
-        """Show selected category"""
-        # Stop TV stream kad prelaziš na drugu kategoriju (asinhrono)
-        if self.video_player and self.current_mode == 'tv' and mode != 'tv':
-            logger.info(f"Stopping TV stream before switching to {mode} (async)")
-            QTimer.singleShot(0, self.video_player.stop)
-        
-        self.stacked_widget.setCurrentIndex(1)
-        self.back_btn.show()
+    def _shortcuts(self):
+        QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.go_back)
+        QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, self._backspace)
+        QShortcut(QKeySequence(Qt.Key.Key_F11), self, self._toggle_fullscreen)
+        QShortcut(QKeySequence(Qt.Key.Key_PageDown), self, self._next_channel)
+        QShortcut(QKeySequence(Qt.Key.Key_PageUp), self, self._previous_channel)
 
-        if mode == 'tv':
-            self.category_stack.setCurrentIndex(0)
-            self.breadcrumb_label.setText("Početna > 📺 TV")
-        elif mode == 'vod':
-            self.category_stack.setCurrentIndex(1)
-            self.breadcrumb_label.setText("Početna > 🎬 Filmovi")
-        elif mode == 'series':
-            self.category_stack.setCurrentIndex(2)
-            self.breadcrumb_label.setText("Početna > 📺 Serije")
-
-        self.current_mode = mode
-        # self.status_bar.showMessage(f"Kategorija: {mode}")
-    
-    def update_menu_counts(self):
-        """Update menu buttons with item counts"""
-        if self.current_playlist_data:
-            channels = self.current_playlist_data.get('channels', [])
-            vod_items = self.current_playlist_data.get('vod_items', [])
-            series_items = self.current_playlist_data.get('series_items', [])
-            
-            self.tv_btn.setText(f"📺 TV ({len(channels)})")
-            self.vod_btn.setText(f"🎬 Filmovi ({len(vod_items)})")
-            self.series_btn.setText(f"📺 Serije ({len(series_items)})")
-    
-    def setup_shortcuts(self):
-        """Setup keyboard shortcuts"""
-        # Fullscreen
-        fullscreen_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F11), self)
-        fullscreen_shortcut.activated.connect(self.player_widget.toggle_fullscreen)
-        
-        # Play/Pause
-        play_pause_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
-        play_pause_shortcut.activated.connect(self.player_widget.toggle_play_pause)
-        
-        # Next channel (TV only)
-        next_shortcut = QShortcut(QKeySequence(Qt.Key.Key_PageDown), self)
-        next_shortcut.activated.connect(self.play_next)
-        
-        # Previous channel (TV only)
-        prev_shortcut = QShortcut(QKeySequence(Qt.Key.Key_PageUp), self)
-        prev_shortcut.activated.connect(self.play_previous)
-        
-        # ESC - exit fullscreen ili nazad na meni
-        esc_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
-        esc_shortcut.activated.connect(self.handle_escape)
-        
-        # Backspace - nazad na meni
-        backspace_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Backspace), self)
-        backspace_shortcut.activated.connect(self.handle_backspace)
-        
-        logger.info("Keyboard shortcuts configured")
-    
-    def handle_escape(self):
-        """Handle ESC key - exit fullscreen, return to dialog, or go back to menu"""
-        # Priority 1: Exit fullscreen if in fullscreen
-        if self.player_widget.isFullScreen():
-            logger.info("ESC pressed in fullscreen - exiting fullscreen and stopping player (async)")
-            # Exit fullscreen
-            self.player_widget.exit_fullscreen()
-            # Asinhrono stop
-            if self.video_player:
-                QTimer.singleShot(0, self.video_player.stop)
-            QTimer.singleShot(50, self.player_widget.stop)
-
-            # Return to previous state
-            if self.current_detail_dialog:
-                self.current_detail_dialog.setVisible(True)
-                self.current_detail_dialog.show()
-                self.current_detail_dialog.raise_()
-                self.current_detail_dialog.activateWindow()
-            return
-        
-        # Priority 2: If player is visible and detail dialog exists, bring dialog to front
-        if self.stacked_widget.currentIndex() == 0 and self.current_detail_dialog:
-            self.on_playback_exited()
-            return
-        
-        # Priority 3: Go back to menu if not in menu
-        if self.current_mode != 'menu':
-            self.show_menu()
-    
-    
-    def handle_backspace(self):
-        """Handle Backspace key - go back to menu"""
-        if self.current_mode != 'menu' and not self.player_widget.isFullScreen():
-            self.show_menu()
-    
-    def check_saved_playlist(self):
-        """Check if there's a saved playlist to load"""
-        saved_playlist = self.db.get_last_playlist()
-        if saved_playlist:
-            playlist_name = saved_playlist.get('name', 'Unknown')
-            logger.info(f"Loading saved playlist: {playlist_name}")
-            # self.status_bar.showMessage(f"Učitavanje liste: {playlist_name}...")
-            QTimer.singleShot(100, lambda: self.load_saved_playlist(saved_playlist))
-        else:
-            QTimer.singleShot(500, self.show_welcome_dialog)
-    
-    def load_saved_playlist(self, saved_playlist: dict, force_refresh: bool = False):
-        """Load saved playlist (from cache or re-parse if force_refresh)"""
-        try:
-            from core.playlist_parser import PlaylistParser
-            
-            if saved_playlist.get('type') == 'M3U':
-                url = saved_playlist.get('url', '')
-                if not url:
-                    logger.warning("M3U URL is empty")
-                    self.show_welcome_dialog()
-                    return
-                channels, vod_items, series_items = PlaylistParser.parse_m3u_file(url, force_refresh=force_refresh)
-            elif saved_playlist.get('type') == 'Xtream':
-                server = saved_playlist.get('server', '')
-                username = saved_playlist.get('username', '')
-                password = saved_playlist.get('password', '')
-                if not all([server, username, password]):
-                    logger.warning("Xtream credentials incomplete")
-                    self.show_welcome_dialog()
-                    return
-                channels, vod_items, series_items = PlaylistParser.parse_xtream_codes(server, username, password, force_refresh=force_refresh)
-            else:
-                logger.warning(f"Unknown playlist type: {saved_playlist.get('type')}")
-                self.show_welcome_dialog()
-                return
-            
-            if not channels and not vod_items and not series_items:
-                logger.warning("Playlist loaded but contains no data")
-                # self.status_bar.showMessage("Lista je prazna ili nije mogla biti učitana")
-                QTimer.singleShot(2000, self.show_welcome_dialog)
-                return
-            
-            self.current_playlist_data = {
-                'channels': channels,
-                'vod_items': vod_items,
-                'series_items': series_items
-            }
-            
-            self.live_tv_widget.load_channels(channels)
-            self.vod_widget.load_vod_items(vod_items)
-            self.series_widget.load_series_items(series_items)
-            
-            # Update menu button counts
-            self.update_menu_counts()
-            
-            status_msg = f"Lista učitana: {len(channels)} kanala, {len(vod_items)} filmova, {len(series_items)} serija"
-            if force_refresh:
-                status_msg += " (osveženo)"
-            # self.status_bar.showMessage(status_msg)
-            
-            logger.info(f"Successfully loaded playlist with {len(channels)} channels, {len(vod_items)} VOD items, {len(series_items)} series (force_refresh={force_refresh})")
-            
-            # Show menu after loading
-            self.show_menu()
-            
-        except Exception as e:
-            logger.error(f"Failed to load saved playlist: {e}", exc_info=True)
-            # self.status_bar.showMessage("Greška pri učitavanju liste")
-            QMessageBox.warning(self, "Greška", f"Greška pri učitavanju liste:\n{str(e)}")
-            QTimer.singleShot(2000, self.show_welcome_dialog)
-    
-    def show_welcome_dialog(self):
-        """Show welcome dialog"""
-        msg = QMessageBox(self)
-        msg.setWindowTitle("Dobrodošli u MigeCast IPTV")
-        msg.setText("Dobrodošli!\n\nDa biste počeli, dodajte IPTV listu preko Podešavanja.")
-        msg.setIcon(QMessageBox.Icon.Information)
-        msg.exec()
-        QTimer.singleShot(200, self.show_settings)
-    
-    def show_settings(self):
-        """Show settings dialog"""
-        try:
-            dialog = SettingsDialog(self)
-            dialog.playlist_added.connect(self.on_playlist_added)
-            dialog.refresh_requested.connect(self.on_refresh_requested)  # NOVO
-            result = dialog.exec()
-            logger.info(f"Settings dialog closed with result: {result}")
-        except Exception as e:
-            logger.error(f"Error showing settings dialog: {e}", exc_info=True)
-            error_msg = get_user_friendly_error(e, 'general')
-            QMessageBox.critical(self, "Greška", f"Greška pri otvaranju podešavanja:\n\n{error_msg}")
-
-    def apply_theme(self):
-        """Apply current theme settings"""
-        try:
-            config = Config()
-            theme_name = config.get('appearance', 'theme', 'dark')
-            font_size = 16  # Fixed font size
-
-            logger.info(f"Applying theme: {theme_name}")
-
-            # Generate and apply stylesheet
-            stylesheet = generate_stylesheet(theme_name, font_size)
-            self.setStyleSheet(stylesheet)
-
-            logger.info("Theme applied successfully")
-        except Exception as e:
-            logger.error(f"Error applying theme: {e}", exc_info=True)
-
-    def on_playlist_added(self, channels: list, vod_items: list, series_items: list):
-        """Handle new playlist added from settings"""
-        self.current_playlist_data = {
-            'channels': channels,
-            'vod_items': vod_items,
-            'series_items': series_items
-        }
-        
-        self.live_tv_widget.load_channels(channels)
-        self.vod_widget.load_vod_items(vod_items)
-        self.series_widget.load_series_items(series_items)
-        
-        # Update menu button counts
-        self.update_menu_counts()
-
-        # self.status_bar.showMessage(f"Lista učitana: {len(channels)} kanala, {len(vod_items)} filmova, {len(series_items)} serija")
-        
-        # Show menu after adding playlist
-        self.show_menu()
-    
-    def on_refresh_requested(self):
-        """Handle refresh playlist request from settings"""
-        saved_playlist = self.db.get_last_playlist()
-        if saved_playlist:
-            logger.info("Refreshing playlist...")
-            # self.status_bar.showMessage("Osvežavanje liste...")
-            QTimer.singleShot(100, lambda: self.load_saved_playlist(saved_playlist, force_refresh=True))
-        else:
-            QMessageBox.warning(self, "Greška", "Nema aktivne playliste za osvežavanje.")
-    
-    def play_channel(self, channel: Channel):
-        """Play selected channel"""
-        logger.info(f"Playing channel: {channel.name}")
-        
-        # Save current mode for TV playback
-        self.previous_mode = self.current_mode
-        
-        self.player_widget.play_url(channel.url, content_type='tv', content_title=channel.name)
-        # self.status_bar.showMessage(f"Reprodukcija: {channel.name}")
-    
-    def play_vod(self, vod_item: VODItem):
-        """Play selected VOD item - show detail dialog"""
-        logger.info(f"Opening VOD detail: {vod_item.name}")
-        
-        from ui.vod_detail_dialog import VODDetailDialog
-
-        dialog = VODDetailDialog(vod_item, self.vod_widget.image_cache, self.db, self)
-        dialog.play_clicked.connect(lambda: self.start_vod_playback(vod_item, dialog))
-        dialog.resume_clicked.connect(lambda pos: self.resume_vod_playback(vod_item, pos, dialog))
-        dialog.favorite_changed.connect(self.vod_widget.refresh_favorites)
-
-        # Save dialog reference and show as modeless (non-blocking) dialog
-        self.current_detail_dialog = dialog
-        dialog.show()
-    
-    def start_vod_playback(self, vod_item: VODItem, dialog=None):
-        """Start VOD playback from beginning"""
-        logger.info(f"Playing VOD: {vod_item.name}")
-
-        # Save current mode at the moment when user clicks Play
-        self.previous_mode = self.current_mode
-
-        # Switch to player widget
-        self.stacked_widget.setCurrentIndex(0)  # Show player
-
-        # Play video
-        self.player_widget.play_url(vod_item.url, content_type='vod', content_title=vod_item.name, stream_id=str(vod_item.stream_id))
-        # self.status_bar.showMessage(f"Reprodukcija: {vod_item.name}")
-        self.db.mark_vod_watched(vod_item.stream_id, vod_item.name)
-
-        # Enter fullscreen automatically after short delay
-        QTimer.singleShot(500, self.player_widget.enter_fullscreen)
-
-    def resume_vod_playback(self, vod_item: VODItem, position_seconds: int, dialog=None):
-        """Resume VOD playback from saved position"""
-        logger.info(f"Resuming VOD: {vod_item.name} from {position_seconds}s")
-
-        # Save current mode
-        self.previous_mode = self.current_mode
-
-        # Switch to player widget
-        self.stacked_widget.setCurrentIndex(0)
-
-        # Play video and seek to saved position
-        self.player_widget.play_url(vod_item.url, content_type='vod', content_title=vod_item.name, stream_id=str(vod_item.stream_id), resume_position=position_seconds)
-        # self.status_bar.showMessage(f"Nastavljam: {vod_item.name}")
-        self.db.mark_vod_watched(vod_item.stream_id, vod_item.name)
-
-        # Enter fullscreen automatically after seek completes (2.5s to allow for 2s seek delay)
-        QTimer.singleShot(2500, self.player_widget.enter_fullscreen)
-
-    def play_series(self, series_name: str, episodes: list):
-        """Play selected series - show season/episode selection dialog"""
-        logger.info(f"Opening series detail: {series_name}")
-        # Save episodes list for auto-play
-        self.current_series_episodes = sorted(
-            episodes,
-            key=lambda x: (int(x.season or 0), int(x.episode or 0))
-        )
-        from ui.series_detail_dialog import SeriesDetailDialog
-
-        dialog = SeriesDetailDialog(series_name, episodes, self.series_widget.image_cache, self.db, self)
-        dialog.play_episode_clicked.connect(lambda ep: self.start_series_playback(ep, dialog))
-        dialog.resume_episode_clicked.connect(lambda ep, pos: self.resume_series_playback(ep, pos, dialog))
-        dialog.favorite_changed.connect(self.series_widget.refresh_favorites)
-
-        # Save dialog reference and show as modeless (non-blocking) dialog
-        self.current_detail_dialog = dialog
-        dialog.show()
-        
-    def start_series_playback(self, episode: SeriesItem, dialog=None):
-        """Start series episode playback with auto-play support"""
-        logger.info(f"Playing series episode: {episode.name}")
-        logger.info(f"Current series episodes count: {len(self.current_series_episodes) if self.current_series_episodes else 0}")
-        
-        # Save current mode
-        self.previous_mode = self.current_mode
-        
-        # Find current episode in the list and get next episode info
-        if self.current_series_episodes:
-            try:
-                # Find current episode index
-                self.current_episode_index = next(
-                    (i for i, ep in enumerate(self.current_series_episodes) if ep.stream_id == episode.stream_id),
-                    -1
-                )
-                logger.info(f"Current episode index: {self.current_episode_index}")
-                
-                # Get next episode info (if exists)
-                next_episode_info = None
-                if self.current_episode_index >= 0 and self.current_episode_index < len(self.current_series_episodes) - 1:
-                    next_ep = self.current_series_episodes[self.current_episode_index + 1]
-                    next_episode_info = {
-                        'title': next_ep.name,
-                        'url': next_ep.url,
-                        'stream_id': next_ep.stream_id,
-                        'season': next_ep.season,
-                        'episode': next_ep.episode
-                    }
-                    logger.info(f"Next episode available: {next_ep.name}")
-                else:
-                    logger.info("This is the last episode")
-            
-            except Exception as e:
-                logger.error(f"Error finding next episode: {e}")
-                next_episode_info = None
-        else:
-            logger.warning("No current_series_episodes set")
-            next_episode_info = None
-        
-        # Switch to player widget
-        self.stacked_widget.setCurrentIndex(0)
-        logger.info(f"Playing with auto-play info: {next_episode_info}")
-        
-        # Play video with next episode info
-        series_title = f"{self.current_series.name} - {episode.name}" if hasattr(self, 'current_series') else episode.name
-        self.player_widget.play_url(episode.url, content_type='series', next_episode_info=next_episode_info, content_title=series_title, stream_id=str(episode.stream_id))
-        # self.status_bar.showMessage(f"Reprodukcija: {episode.name}")
-        self.db.mark_series_watched(episode.stream_id, episode.name)
-
-        # Enter fullscreen automatically
-        QTimer.singleShot(500, self.player_widget.enter_fullscreen)
-
-    def resume_series_playback(self, episode: SeriesItem, position_seconds: int, dialog=None):
-        """Resume series episode playback from saved position"""
-        logger.info(f"Resuming series episode: {episode.name} from {position_seconds}s")
-        logger.info(f"Current series episodes count: {len(self.current_series_episodes) if self.current_series_episodes else 0}")
-
-        # Save current mode
-        self.previous_mode = self.current_mode
-
-        # Find current episode in the list and get next episode info
-        if self.current_series_episodes:
-            try:
-                # Find current episode index
-                self.current_episode_index = next(
-                    (i for i, ep in enumerate(self.current_series_episodes) if ep.stream_id == episode.stream_id),
-                    -1
-                )
-                logger.info(f"Current episode index: {self.current_episode_index}")
-
-                # Get next episode info (if exists)
-                next_episode_info = None
-                if self.current_episode_index >= 0 and self.current_episode_index < len(self.current_series_episodes) - 1:
-                    next_ep = self.current_series_episodes[self.current_episode_index + 1]
-                    next_episode_info = {
-                        'title': next_ep.name,
-                        'url': next_ep.url,
-                        'stream_id': next_ep.stream_id,
-                        'season': next_ep.season,
-                        'episode': next_ep.episode
-                    }
-                    logger.info(f"Next episode available: {next_ep.name}")
-                else:
-                    logger.info("This is the last episode")
-
-            except Exception as e:
-                logger.error(f"Error finding next episode: {e}")
-                next_episode_info = None
-        else:
-            logger.warning("No current_series_episodes set")
-            next_episode_info = None
-
-        # Switch to player widget
-        self.stacked_widget.setCurrentIndex(0)
-        logger.info(f"Resuming with auto-play info: {next_episode_info}")
-
-        # Play video with next episode info and resume position
-        series_title = f"{self.current_series.name} - {episode.name}" if hasattr(self, 'current_series') else episode.name
-        self.player_widget.play_url(episode.url, content_type='series', next_episode_info=next_episode_info, content_title=series_title, stream_id=str(episode.stream_id), resume_position=position_seconds)
-        # self.status_bar.showMessage(f"Nastavljam: {episode.name}")
-        self.db.mark_series_watched(episode.stream_id, episode.name)
-
-        # Enter fullscreen automatically after seek completes (2.5s to allow for 2s seek delay)
-        QTimer.singleShot(2500, self.player_widget.enter_fullscreen)
-    
-    def play_next(self):
-        """Play next channel/item"""
-        if self.current_mode == 'tv':
-            self.live_tv_widget.select_next_channel()
-    
-    def play_previous(self):
-        """Play previous channel/item"""
-        if self.current_mode == 'tv':
-            self.live_tv_widget.select_previous_channel()
-    
-    def play_next_series_episode(self):
-        """Play next episode (triggered by auto-play)"""
-        logger.info(f"play_next_series_episode called - current_episode_index: {self.current_episode_index}")
-        logger.info(f"current_series_episodes count: {len(self.current_series_episodes) if self.current_series_episodes else 0}")
-        
-        if not self.current_series_episodes or self.current_episode_index < 0:
-            logger.warning("Cannot play next episode: no episode list or invalid index")
-            return
-        
-        next_index = self.current_episode_index + 1
-        logger.info(f"Next index: {next_index}")
-        
-        if next_index < len(self.current_series_episodes):
-            next_episode = self.current_series_episodes[next_index]
-            logger.info(f"Auto-playing next episode: {next_episode.name}")
-            
-            # Play next episode
-            self.start_series_playback(next_episode)
-        else:
-            logger.info("No more episodes - staying on last episode")
-            # self.status_bar.showMessage("Nema više epizoda u sezoni")
-    
-    def closeEvent(self, event):
-        """Handle window close event"""
-        logger.info("Application closing - starting cleanup...")
-        
-        try:
-            if self.video_player:
-                logger.info("Stopping video player...")
-                self.video_player.stop()
-        except Exception as e:
-            logger.error(f"Error stopping video player: {e}")
-        
-        try:
-            if hasattr(self, 'live_tv_widget'):
-                logger.info("Cleaning up LiveTVWidget...")
-                self.live_tv_widget.cleanup()
-        except Exception as e:
-            logger.error(f"Error cleaning up LiveTVWidget: {e}")
-        
-        try:
-            if hasattr(self, 'vod_widget'):
-                logger.info("Cleaning up VODWidget...")
-                self.vod_widget.cleanup()
-        except Exception as e:
-            logger.error(f"Error cleaning up VODWidget: {e}")
-        
-        try:
-            if hasattr(self, 'series_widget'):
-                logger.info("Cleaning up SeriesWidget...")
-                self.series_widget.cleanup()
-        except Exception as e:
-            logger.error(f"Error cleaning up SeriesWidget: {e}")
-        
-        event.accept()
-        logger.info("Application closed successfully")
-        
-    def on_video_double_click(self):
-        """Double click na video -> fullscreen toggle"""
-        if self.player_widget:
+    def _toggle_fullscreen(self):
+        if self._pages_built:
             self.player_widget.toggle_fullscreen()
 
-    def on_video_mute_toggle(self):
-        """Mute/unmute na single klik VIDEO ZVUKA"""
-        if self.player_widget:
-            current_vol = self.player_widget.volume_slider.value()
-            new_vol = 0 if current_vol > 0 else 50
-            self.player_widget.set_volume(new_vol)
+    def _backspace(self):
+        focus = QApplication.focusWidget()
+        if focus is not None and focus.inherits("QLineEdit"):
+            return
+        self.go_back()
+
+    def _next_channel(self):
+        if self.stack.currentIndex() == TV:
+            self.live_tv_widget.select_next_channel()
+
+    def _previous_channel(self):
+        if self.stack.currentIndex() == TV:
+            self.live_tv_widget.select_previous_channel()
+
+    # ------------------------------------------------------------------ theme
+
+    def apply_theme(self, name: Optional[str] = None):
+        name = name or self.config.get("appearance", "theme", "dark")
+        themes.set_current(name)
+        QApplication.instance().setStyleSheet(themes.generate_stylesheet(name))
+        if self._pages_built:
+            for view in (self.vod_page.grid, self.series_page.grid, self.series_detail.view, self.live_tv_widget.view):
+                view.viewport().update()
+
+    def _apply_player_settings(self):
+        self.video_player.max_reconnect_attempts = int(Config().get("player", "reconnect_attempts", 3))
+
+    # ------------------------------------------------------------------ navigation
+
+    def go(self, page: int, push: bool = True):
+        self._ensure_pages()
+        current = self.stack.currentIndex()
+        if current == page:
+            return
+        if current == TV and page != TV and self.player_widget.content_type == "tv":
+            QTimer.singleShot(0, self.player_widget.stop)
+            self.live_tv_widget.set_playing(None)
+        if push:
+            self.history.append(current)
+        if page == HOME:
+            self.history.clear()
+        self.stack.setCurrentIndex(page)
+        self.breadcrumb.setText(CRUMBS.get(page, ""))
+        self.back_btn.setVisible(page != HOME)
+        self.settings_btn.setEnabled(page != SETTINGS)
+        if page == SETTINGS:
+            self._update_settings_info()
+
+    def go_back(self):
+        if not self._pages_built or self.overlay.isVisible() or self.player_widget.is_fullscreen:
+            return
+        if self.stack.currentIndex() == HOME:
+            return
+        target = self.history.pop() if self.history else HOME
+        self.go(target, push=False)
+        if target in (VOD, SERIES):
+            (self.vod_page if target == VOD else self.series_page).refresh_flags()
+
+    def open_section(self, page: int):
+        self._ensure_pages()
+        if not self.parsed:
+            if self.overlay.isVisible():
+                return
+            self.settings_page.show_welcome(True)
+            self.go(SETTINGS)
+            return
+        counts = {TV: len(self.parsed.channels), VOD: len(self.parsed.vod_items), SERIES: len(self.parsed.series_items)}
+        if counts[page] == 0:
+            info(self, "Nema sadržaja", "Vaša lista ne sadrži ovaj tip sadržaja.")
+            return
+        self.go(page)
+
+    # ------------------------------------------------------------------ startup
+
+    def start(self):
+        """Called right after the window is shown (the style sheet is already
+        applied in main.py, so it is not applied a second time here)."""
+        themes.set_current(self.config.get("appearance", "theme", "dark"))
+        self.home_status.setText("Učitavam listu…")
+        self.overlay.start("Učitavam listu…", cancellable=False)
+        # Database and playlist cache load in a background thread while the
+        # remaining pages are built on the GUI thread.
+        from ui.workers import StartupWorker
+        self.startup_worker = StartupWorker(self)
+        self.startup_worker.progress.connect(self.overlay.text.setText)
+        self.startup_worker.finished_ok.connect(self._on_startup_loaded)
+        self.startup_worker.failed.connect(self._on_startup_failed)
+        self.startup_worker.start()
+        QTimer.singleShot(0, self._ensure_pages)
+        QTimer.singleShot(15000, ImageLoader.instance().prune_disk_async)
+
+    def _on_startup_loaded(self, playlist, parsed):
+        self._ensure_pages()
+        self.playlist = playlist
+        if parsed is not None and parsed.total:
+            self._show_playlist(parsed)
+            startup_profiler.mark("playlist_shown")
+            self._maybe_auto_refresh()
+        elif playlist:
+            # A list is configured but nothing is cached (e.g. interrupted first load).
+            self.overlay.finish()
+            self.refresh_playlist(silent=False)
+        else:
+            self.overlay.finish()
+            self.home_status.setText("Dodajte IPTV listu u Podešavanjima da biste počeli.")
+            self.settings_page.show_welcome(True)
+            self.go(SETTINGS)
+            startup_profiler.mark("first_run_ready")
+        self._finish_startup()
+
+    def _on_startup_failed(self, message: str):
+        self._ensure_pages()
+        self.overlay.finish()
+        self.home_status.setText(message)
+        info(self, "Greška", message)
+        self._finish_startup()
+
+    def _finish_startup(self):
+        self._loaded_once = True
+        report = startup_profiler.env_report_path()
+        if report:
+            startup_profiler.write_report(report)
+        if self.smoke_test:
+            QTimer.singleShot(1500, self.close)
+
+    def _maybe_auto_refresh(self):
+        if not self.playlist or not self.config.get("playlists", "auto_refresh", True):
+            return
+        last = self.playlist.get("last_refreshed")
+        days = int(self.config.get("playlists", "refresh_interval_days", 7))
+        if last is None or datetime.now() - last > timedelta(days=days):
+            later(self, 3000, lambda: self.refresh_playlist(silent=True))
+
+    def _show_playlist(self, parsed):
+        self.parsed = parsed
+        self.overlay.finish()
+        self.live_tv_widget.load_channels(parsed.channels)
+        self.vod_page.set_items(parsed.vod_items)
+        self.series_page.set_items(parsed.series_items)
+        self.episode_cache.clear()
+        series_count = len(getattr(self.series_page, "groups", {}) or {})
+        self.tv_btn.setText(f"📺\nTV\n({len(parsed.channels)})")
+        self.vod_btn.setText(f"🎬\nFilmovi\n({len(parsed.vod_items)})")
+        self.series_btn.setText(f"📺\nSerije\n({series_count})")
+        self.home_status.setText("")
+        self.settings_page.show_welcome(False)
+        self._update_settings_info()
+
+    def _update_settings_info(self):
+        counts = None
+        if self.parsed:
+            counts = (len(self.parsed.channels), len(self.parsed.vod_items),
+                      len(getattr(self.series_page, "groups", {}) or {}))
+        self.settings_page.set_current_playlist(self.playlist, counts)
+
+    # ------------------------------------------------------------------ playlist loading
+
+    def load_playlist(self, source: dict, name: str, playlist_id: Optional[int] = None, silent: bool = False):
+        if self.loader_worker is not None and self.loader_worker.isRunning():
+            if silent:
+                return
+            self.loader_worker.cancel()
+            self.loader_worker.abandoned = True
+        from ui.workers import PlaylistLoadWorker
+        worker = PlaylistLoadWorker(source, name, playlist_id, self)
+        self.loader_worker = worker
+        worker.silent = silent
+        if not silent:
+            self.overlay.start("Učitavam listu…", cancellable=True)
+            worker.progress.connect(self.overlay.set_detail)
+        else:
+            self.toast.show_message("🔄 Osvežavam listu u pozadini…")
+        worker.finished_ok.connect(self._on_list_loaded)
+        worker.failed.connect(self._on_list_failed)
+        worker.cancelled.connect(self._on_list_cancelled)
+        worker.start()
+
+    def refresh_playlist(self, silent: bool = False):
+        if not self.playlist:
+            info(self, "Nema liste", "Prvo dodajte IPTV listu.")
+            return
+        p = self.playlist
+        if p.get("type") == "Xtream":
+            source = {"type": "Xtream", "server": p.get("server", ""), "username": p.get("username", ""),
+                      "password": p.get("password", "")}
+        else:
+            source = {"type": "M3U", "url": p.get("url", "")}
+        self.load_playlist(source, p.get("name") or "Moja lista", p.get("id"), silent=silent)
+
+    def cancel_loading(self):
+        """Cancel immediately; a network call still blocking in the worker
+        finishes in the background and its result is ignored."""
+        worker = self.loader_worker
+        if worker is not None:
+            worker.cancel()
+            worker.abandoned = True
+            self._on_list_cancelled()
+
+    def _on_list_loaded(self, playlist, parsed):
+        if getattr(self.sender(), "abandoned", False):
+            return
+        silent = getattr(self.sender(), "silent", False)
+        self.playlist = playlist
+        current = self.stack.currentIndex()
+        self._show_playlist(parsed)
+        self.settings_page.clear_inputs()
+        summary = (f"Lista učitana: {len(parsed.channels)} kanala, {len(parsed.vod_items)} filmova, "
+                   f"{len(getattr(self.series_page, 'groups', {}) or {})} serija.")
+        self.toast.show_message(("✓ Lista je osvežena. " if silent else "✓ ") + summary)
+        if not silent:
+            self.go(HOME)
+        elif current in (VOD_DETAIL, SERIES_DETAIL):
+            pass  # do not pull the user away from what they are looking at
+        if self.smoke_test:
+            QTimer.singleShot(500, self.close)
+
+    def _on_list_failed(self, message: str):
+        if getattr(self.sender(), "abandoned", False):
+            return
+        silent = getattr(self.sender(), "silent", False)
+        self.overlay.finish()
+        if silent:
+            self.toast.show_message(f"Lista nije osvežena: {message} Koristi se sačuvana lista.", 7000)
+            return
+        if self.stack.currentIndex() != SETTINGS:
+            self.go(SETTINGS)
+        self.settings_page.show_error(message)
+        extra = "\n\nPrethodno sačuvana lista je i dalje dostupna." if self.parsed else ""
+        info(self, "Lista nije učitana", message + extra)
+
+    def _on_list_cancelled(self):
+        if getattr(self.sender(), "abandoned", False):
+            return  # already handled when the user pressed "Otkaži"
+        self.overlay.finish()
+        self.toast.show_message("Učitavanje je otkazano." + (" Koristi se sačuvana lista." if self.parsed else ""))
+
+    def import_old_database(self, path: str):
+        if not ask(self, "Uvoz podataka",
+                   "Trenutni podaci biće zamenjeni podacima iz izabranog fajla.\n"
+                   "Rezervna kopija trenutnih podataka čuva se automatski u folderu backups.\n\nNastaviti?"):
+            return
+        from core.database import Database
+        from core import legacy_import
+        try:
+            Database.reset_instance()
+            legacy_import.import_database_file(path)
+        except Exception as exc:
+            logger.exception("Import failed")
+            info(self, "Uvoz nije uspeo", str(exc))
+        self.parsed = None
+        self.start()
+
+    # ------------------------------------------------------------------ opening content
+
+    def open_vod(self, vod):
+        self.vod_detail.show_item(vod)
+        self.go(VOD_DETAIL)
+
+    def open_series(self, payload):
+        key, episodes = payload
+        self.current_series_key = key
+        stub = next((e for e in episodes if e.is_series_stub), None)
+        if stub is not None:
+            cached = self.episode_cache.get(key)
+            self.series_detail.show_series(key, cached or episodes, loading=cached is None)
+            if cached is None:
+                self._load_xtream_episodes(key)
+        else:
+            self.series_detail.show_series(key, episodes)
+        self.go(SERIES_DETAIL)
+
+    def _load_xtream_episodes(self, key: str, force: bool = False):
+        groups = getattr(self.series_page, "groups", {}) or {}
+        stub = next((e for e in groups.get(key, []) if e.is_series_stub), None)
+        if stub is None or (key in self.episode_workers and self.episode_workers[key].isRunning()):
+            return
+        if force:
+            self.series_detail.set_episodes(groups.get(key, []), loading=True)
+        from ui.workers import EpisodesWorker
+        worker = EpisodesWorker(key, stub, self.playlist, self)
+        worker.finished_ok.connect(self._on_episodes_loaded)
+        worker.failed.connect(self._on_episodes_failed)
+        self.episode_workers[key] = worker
+        worker.start()
+
+    def _on_episodes_loaded(self, key: str, episodes: list):
+        self.episode_cache[key] = episodes
+        if key == self.current_series_key and self.stack.currentIndex() == SERIES_DETAIL:
+            self.series_detail.set_episodes(episodes)
+
+    def _on_episodes_failed(self, key: str, message: str):
+        if key == self.current_series_key:
+            groups = getattr(self.series_page, "groups", {}) or {}
+            self.series_detail.set_episodes(groups.get(key, []), error=message)
+
+    # ------------------------------------------------------------------ playback
+
+    def _url(self, url: str) -> str:
+        from core.playlist_service import resolve_stream_url
+        return resolve_stream_url(url, self.playlist)
+
+    def play_channel(self, channel):
+        logger.info("Playing a TV channel")
+        self.player_widget.play_url(self._url(channel.url), content_type="tv", content_title=channel.name)
+
+    def play_vod(self, vod, resume_seconds: int = 0):
+        self.current_vod = vod
+        self.player_widget.play_url(self._url(vod.url), content_type="vod", content_title=vod.name,
+                                    stream_id=str(vod.stream_id), resume_position=resume_seconds or None)
+        QTimer.singleShot(400, self.player_widget.enter_fullscreen)
+
+    def play_episode(self, episode, ordered: list, resume_seconds: int = 0):
+        from core.database import Database
+        self.series_queue = list(ordered)
+        self.series_index = next((i for i, e in enumerate(self.series_queue) if e.stream_id == episode.stream_id), -1)
+        key = self.current_series_key
+        Database().set_series_state(key, season=episode.season or "__none__", episode_id=episode.stream_id)
+        next_info = None
+        if 0 <= self.series_index < len(self.series_queue) - 1:
+            nxt = self.series_queue[self.series_index + 1]
+            next_info = {"title": nxt.name, "stream_id": nxt.stream_id, "season": nxt.season, "episode": nxt.episode}
+        code = episode_code(episode.season, episode.episode)
+        from ui.series_detail_page import display_title
+        title = f"{key}  ·  {code}  {display_title(episode, key)}".strip()
+        was_fullscreen = self.player_widget.is_fullscreen
+        self.player_widget.play_url(self._url(episode.url), content_type="series", next_episode_info=next_info,
+                                    content_title=title, stream_id=str(episode.stream_id),
+                                    resume_position=resume_seconds or None)
+        if not was_fullscreen:
+            QTimer.singleShot(400, self.player_widget.enter_fullscreen)
+        if self.stack.currentIndex() == SERIES_DETAIL:
+            self.series_detail.focus_episode(episode)
+
+    def play_next_episode(self):
+        if 0 <= self.series_index < len(self.series_queue) - 1:
+            self.play_episode(self.series_queue[self.series_index + 1], self.series_queue, 0)
+
+    def on_playback_finished(self, content_type: str):
+        from core.database import Database
+        db = Database()
+        if content_type == "vod" and self.current_vod is not None:
+            db.mark_vod_watched(self.current_vod.stream_id, self.current_vod.name)
+        elif content_type == "series" and 0 <= self.series_index < len(self.series_queue):
+            episode = self.series_queue[self.series_index]
+            db.mark_series_watched(episode.stream_id, episode.name, self.current_series_key,
+                                   episode.season or "", episode.episode or "")
+
+    def on_playback_exited(self):
+        page = self.stack.currentIndex()
+        if page == VOD_DETAIL:
+            self.vod_detail.refresh()
+            self.vod_page.refresh_flags()
+        elif page == SERIES_DETAIL:
+            self.series_detail.refresh()
+            self.series_page.refresh_flags()
+        self.activateWindow()
+
+    # ------------------------------------------------------------------ shutdown
+
+    def closeEvent(self, event):
+        logger.info("Closing application")
+        try:
+            if self._pages_built:
+                self.player_widget.stop()
+        except Exception as exc:
+            logger.error("Error stopping player: %s", exc)
+        for worker in [self.loader_worker, self.startup_worker, *self.episode_workers.values()]:
+            if worker is not None and worker.isRunning():
+                if hasattr(worker, "cancel"):
+                    worker.cancel()
+                worker.abandoned = True
+                worker.wait(1500)  # daemon threads: never block closing for long
+        ImageLoader.instance().cleanup()
+        self.video_player.cleanup()
+        event.accept()

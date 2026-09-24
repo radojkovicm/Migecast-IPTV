@@ -1,0 +1,170 @@
+name: Windows installer
+
+on:
+  push:
+    branches: [main, "claude/**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish a GitHub Release with this tag (e.g. v2.0.0-beta1). Empty = build only."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  VLC_VERSION: "3.0.21"
+  PYTHONUTF8: "1"
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Qt runtime libraries
+        run: sudo apt-get update -q && sudo apt-get install -y -q libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3
+      - run: pip install -r requirements-dev.txt
+      - name: Secret check (tracked files)
+        run: python tools/check_repo_secrets.py
+      - name: Unit + UI tests (offscreen)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
+  windows:
+    needs: tests
+    runs-on: windows-2022
+    permissions:
+      contents: write   # only used on tags to publish the release
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install build dependencies (pinned)
+        run: pip install -r requirements-build.txt -r requirements-dev.txt
+
+      - name: Tests on Windows
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
+
+      - name: Download and verify libVLC (VideoLAN official build)
+        shell: pwsh
+        run: |
+          $base = "https://download.videolan.org/pub/videolan/vlc/$env:VLC_VERSION/win64"
+          $zip = "vlc-$env:VLC_VERSION-win64.zip"
+          Invoke-WebRequest "$base/$zip" -OutFile $zip
+          Invoke-WebRequest "$base/$zip.sha256" -OutFile "$zip.sha256"
+          $expected = ((Get-Content "$zip.sha256" -Raw).Trim() -split '\s+')[0].ToLower()
+          if ("${{ vars.VLC_SHA256 }}") { $expected = "${{ vars.VLC_SHA256 }}".ToLower() }
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "VLC checksum mismatch: $actual != $expected" }
+          Write-Host "VLC $env:VLC_VERSION sha256 $actual"
+          Expand-Archive $zip -DestinationPath vendor-tmp
+          $src = "vendor-tmp/vlc-$env:VLC_VERSION"
+          New-Item -ItemType Directory -Force vendor/vlc | Out-Null
+          Copy-Item "$src/libvlc.dll", "$src/libvlccore.dll" vendor/vlc/
+          Copy-Item "$src/plugins" vendor/vlc/ -Recurse
+          Copy-Item "$src/COPYING.txt" vendor/vlc/VLC-COPYING.txt
+          # Pre-built plugin cache: libVLC starts much faster on the first play.
+          & "$src/vlc-cache-gen.exe" "vendor/vlc/plugins"
+          if (-not (Test-Path vendor/vlc/plugins/plugins.dat)) { throw "plugins.dat not generated" }
+
+      - name: Stamp version and build date
+        id: version
+        shell: pwsh
+        run: |
+          $v = python tools/stamp_version.py --commit "${{ github.sha }}"
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: PyInstaller (one-folder)
+        run: pyinstaller MigeCast.spec --noconfirm --clean
+
+      - name: Verify bundle (complete, no private data)
+        run: python tools/verify_bundle.py dist/MigeCast
+
+      - name: Build installer (Inno Setup)
+        shell: pwsh
+        run: |
+          try {
+            Invoke-WebRequest "https://raw.githubusercontent.com/jrsoftware/issrc/main/Files/Languages/Unofficial/SerbianLatin.isl" -OutFile installer/SerbianLatin.isl
+          } catch { Write-Host "Serbian installer language not available, using English" }
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=${{ steps.version.outputs.version }}" installer\MigeCast.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC failed" }
+
+      - name: SHA-256 checksum
+        id: hash
+        shell: pwsh
+        run: |
+          $file = Get-Item "installer/Output/MigeCast-Setup-${{ steps.version.outputs.version }}.exe"
+          $hash = (Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($file.Name)" | Set-Content -NoNewline -Encoding ascii "$($file.FullName).sha256"
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "name=$($file.Name)" >> $env:GITHUB_OUTPUT
+          "size=$($file.Length)" >> $env:GITHUB_OUTPUT
+          Write-Host "$($file.Name)  $([math]::Round($file.Length / 1MB, 1)) MB  sha256 $hash"
+
+      - name: Installer end-to-end test (install, VLC, upgrade, uninstall, reinstall, startup time)
+        shell: pwsh
+        run: pwsh installer/test_installer.ps1 -Installer "installer/Output/${{ steps.hash.outputs.name }}" -ReportDir installer-test
+
+      - name: Microsoft Defender scan
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          if (Test-Path $mp) {
+            & $mp -SignatureUpdate | Out-Null
+            & $mp -Scan -ScanType 3 -File "$PWD\installer\Output" -DisableRemediation
+            & $mp -Scan -ScanType 3 -File "$PWD\dist\MigeCast" -DisableRemediation
+            "defender_exit=$LASTEXITCODE" | Tee-Object installer-test/defender.txt
+          } else { "Defender CLI not available" | Tee-Object installer-test/defender.txt }
+
+      - name: Site metadata (release.json)
+        shell: pwsh
+        run: >
+          python tools/update_site_release.py
+          --version "${{ steps.version.outputs.version }}"
+          --installer "installer/Output/${{ steps.hash.outputs.name }}"
+          --url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/${{ steps.hash.outputs.name }}"
+          --out installer-test/release.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MigeCast-Setup-${{ steps.version.outputs.version }}
+          path: |
+            installer/Output/*.exe
+            installer/Output/*.sha256
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: installer-test-reports
+          path: installer-test/
+          retention-days: 30
+
+      - name: Publish GitHub release (tag push or manual run with release_tag)
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $name = "${{ steps.hash.outputs.name }}"
+          $tag = "${{ inputs.release_tag }}"
+          if (-not $tag) { $tag = "${{ github.ref_name }}" }
+          $notes = "MigeCast IPTV ${{ steps.version.outputs.version }} for Windows 10/11 (64-bit).`n`nSHA-256: ${{ steps.hash.outputs.sha256 }}"
+          $extra = @()
+          if ($tag -like "*-*") { $extra += "--prerelease" }   # e.g. v2.0.0-beta1
+          # --target creates the tag on the built commit when it does not exist yet.
+          gh release create $tag "installer/Output/$name" "installer/Output/$name.sha256" `
+            --target "${{ github.sha }}" --title "MigeCast IPTV $tag" --notes $notes @extra
