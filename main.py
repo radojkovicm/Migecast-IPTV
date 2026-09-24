@@ -49,6 +49,17 @@ def check_vlc(report_file: str) -> int:
     return 0 if report.get("instance_ok") else 3
 
 
+def install_exception_hook(logger):
+    """PyQt6 aborts the whole process when an exception escapes a slot unless a
+    custom excepthook is installed. Log the error instead and keep running."""
+    def hook(exc_type, exc, tb):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        logger.error("Unhandled error", exc_info=(exc_type, exc, tb))
+    sys.excepthook = hook
+
+
 def main(argv=None):
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.startup_report:
@@ -64,6 +75,8 @@ def main(argv=None):
     logger = logging.getLogger("migecast")
     from version import __build_date__, __version__
     logger.info("MigeCast %s (build %s) starting", __version__, __build_date__)
+
+    install_exception_hook(logger)
 
     from PyQt6.QtCore import Qt
     from PyQt6.QtGui import QFont, QIcon

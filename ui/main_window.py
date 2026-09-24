@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QMainWindow, QSt
 from core.m3u import episode_code
 
 from core.video_player import VideoPlayer
-from ui.widgets import LoadingOverlay, Toast, ask, button, info, label
+from ui.widgets import LoadingOverlay, Toast, ask, button, info, label, later
 from utils import startup_profiler, themes
 from utils.config import Config
 from utils.image_cache import ImageLoader
@@ -300,7 +300,7 @@ class MainWindow(QMainWindow):
         last = self.playlist.get("last_refreshed")
         days = int(self.config.get("playlists", "refresh_interval_days", 7))
         if last is None or datetime.now() - last > timedelta(days=days):
-            QTimer.singleShot(3000, lambda: self.refresh_playlist(silent=True))
+            later(self, 3000, lambda: self.refresh_playlist(silent=True))
 
     def _show_playlist(self, parsed):
         self.parsed = parsed

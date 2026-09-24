@@ -198,3 +198,15 @@ def info(parent: QWidget, title: str, text: str) -> None:
 def ask(parent: QWidget, title: str, text: str, yes: str = "Da", no: str = "Ne", danger: bool = False) -> bool:
     roles = ["danger" if danger else "primary", "secondary"]
     return AppDialog(parent.window(), title, text, [yes, no], roles).exec_() == 0
+
+
+def later(owner, msec: int, callback) -> None:
+    """Run ``callback`` once after ``msec`` unless ``owner`` is deleted first.
+
+    ``QTimer.singleShot(ms, lambda: ...)`` keeps firing after the widget is
+    gone and then raises "wrapped C/C++ object has been deleted"."""
+    timer = QTimer(owner)
+    timer.setSingleShot(True)
+    timer.timeout.connect(callback)
+    timer.timeout.connect(timer.deleteLater)
+    timer.start(msec)
