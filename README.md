@@ -1,12 +1,32 @@
 # MigeCast IPTV
 
-A simple, fast IPTV player for Windows 10/11 (x64), designed for older users who
-only use a mouse: three huge buttons (**TV**, **Filmovi**, **Serije**), large
-text, clear **Nazad / Pusti / Nastavi / Favorit** buttons and no technical
-settings. The user interface is in Serbian (Latin script).
+**MigeCast IPTV is a Windows program for watching live TV channels, movies and
+series from your IPTV subscription.** It is made for people who just want to
+watch: three big buttons on the home screen (**TV**, **Filmovi**, **Serije**),
+large text, and everything can be done with the mouse. Paste the link from your
+IPTV provider once, and the program remembers your list, favorites and where
+you stopped watching. The installer is a single file, and you don't need to
+install anything else (VLC, Python and all libraries are included).
 
-MigeCast does not provide any channels. It plays the M3U/M3U8 playlist or
-Xtream Codes account supplied by the user's IPTV provider.
+*MigeCast IPTV je Windows program za gledanje TV kanala, filmova i serija sa
+vaše IPTV pretplate: velika dugmad, velika slova, sve mišem. Jedan fajl za
+instalaciju, ništa drugo nije potrebno.*
+
+The user interface is in Serbian (Latin script). MigeCast does not provide any
+channels; it plays the M3U/M3U8 playlist or Xtream Codes account supplied by
+your IPTV provider.
+
+**Download:** [latest release](../../releases/latest) · Windows 10/11, 64-bit
+
+| Home screen | Movies |
+|---|---|
+| ![Home screen with the TV, Filmovi and Serije buttons](docs/images/home.png) | ![Movie posters with search and categories](docs/images/movies.png) |
+| **Series: seasons, episodes, resume** | **Live TV with favorites** |
+| ![Series screen with seasons and S01E03 episode rows](docs/images/series.png) | ![Channel list with the video player](docs/images/tv.png) |
+| **Movie details** | **Settings: paste your list link** |
+| ![Movie details with Nastavi and Favorit buttons](docs/images/movie-detail.png) | ![Settings page with link, file and Xtream options](docs/images/settings.png) |
+
+<sub>Screenshots use generated demo data, not a real IPTV list.</sub>
 
 ## For users
 

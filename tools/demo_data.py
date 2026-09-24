@@ -6,19 +6,19 @@ import random
 
 
 def demo_m3u(channels: int = 300, movies: int = 1500, series: int = 40, max_episodes: int = 240,
-             seed: int = 7) -> str:
+             seed: int = 7, image_base: str = "http://img.demo.invalid") -> str:
     rng = random.Random(seed)
     lines = ["#EXTM3U"]
     groups = ["Informativni", "Sport", "Filmski kanali", "Dečiji", "Muzika", "Dokumentarni"]
     for i in range(channels):
         group = groups[i % len(groups)]
-        lines.append(f'#EXTINF:-1 tvg-id="demo{i}.tv" tvg-logo="http://img.demo.invalid/ch/{i}.png" '
+        lines.append(f'#EXTINF:-1 tvg-id="demo{i}.tv" tvg-logo="{image_base}/ch/{i}.png" '
                      f'group-title="{group}",Demo Kanal {i + 1}')
         lines.append(f"http://stream.demo.invalid/live/demo/demo/{1000 + i}.ts")
     genres = ["Filmovi | Akcija", "Filmovi | Komedija", "Filmovi | Drama", "Filmovi | Domaći"]
     for i in range(movies):
         year = 1970 + (i % 55)
-        lines.append(f'#EXTINF:-1 tvg-logo="http://img.demo.invalid/m/{i}.jpg" group-title="{rng.choice(genres)}",'
+        lines.append(f'#EXTINF:-1 tvg-logo="{image_base}/m/{i}.jpg" group-title="{rng.choice(genres)}",'
                      f"Demo Film {i + 1} ({year})")
         lines.append(f"http://stream.demo.invalid/movie/demo/demo/{5000 + i}.mkv")
     for s in range(series):
@@ -28,7 +28,7 @@ def demo_m3u(channels: int = 300, movies: int = 1500, series: int = 40, max_epis
         for e in range(episodes):
             season = e % seasons + 1 if s else e // 24 + 1
             number = e // seasons + 1 if s else e % 24 + 1
-            lines.append(f'#EXTINF:-1 tvg-logo="http://img.demo.invalid/s/{s}.jpg" group-title="Serije | Drame",'
+            lines.append(f'#EXTINF:-1 tvg-logo="{image_base}/s/{s}.jpg" group-title="Serije | Drame",'
                          f"{name} S{season:02d}E{number:02d}")
             lines.append(f"http://stream.demo.invalid/series/demo/demo/{90000 + s * 1000 + e}.mp4")
     lines.append('#EXTINF:-1 group-title="Serije",Serija Bez Sezone E01')
