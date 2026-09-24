@@ -1,0 +1,22 @@
+#EXTM3U x-tvg-url="http://epg.example.invalid/guide.xml"
+#EXTINF:-1 tvg-id="demo1.rs" tvg-name="Demo 1" tvg-logo="http://img.example.invalid/demo1.png" group-title="Informativni, Srbija",Demo Kanal 1
+http://stream.example.invalid/live/demo/demo/1001.ts
+#EXTINF:-1 tvg-id="demo1.rs" group-title="Informativni",Demo Kanal 1 HD
+http://stream.example.invalid/live/demo/demo/1002.ts
+#EXTINF:-1 tvg-logo="" group-title="Sport",Sport Klub S1
+#EXTVLCOPT:http-user-agent=Demo
+http://stream.example.invalid/live/demo/demo/1003.ts
+#EXTINF:-1 tvg-logo="http://img.example.invalid/m1.jpg" group-title="Filmovi | Akcija",Demo Film (2020)
+http://stream.example.invalid/movie/demo/demo/2001.mkv
+#EXTINF:-1 group-title="Domaći",Stari Film.mp4
+http://cdn.example.invalid/files/stari_film.mp4
+#EXTINF:-1 tvg-logo="http://img.example.invalid/s1.jpg" group-title="Serije Domaće",Demo Serija S01E01
+http://stream.example.invalid/series/demo/demo/3001.mkv
+#EXTINF:-1 group-title="Serije Domaće",Demo Serija S01 E02
+http://stream.example.invalid/series/demo/demo/3002.mkv
+#EXTINF:-1 group-title="Serije Domaće",Demo Serija S02E01
+http://stream.example.invalid/series/demo/demo/3003.mkv
+#EXTINF:-1 group-title="TV Shows",Druga Serija 1x05
+http://cdn.example.invalid/shows/druga-1x05.mp4
+#EXTINF:-1 group-title="Serije",Bez Sezone Epizoda 7
+http://cdn.example.invalid/shows/bez-sezone-7.mp4

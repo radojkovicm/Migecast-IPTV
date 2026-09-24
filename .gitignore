@@ -1,16 +1,45 @@
-"*.png
-*.pyc
-*.jpg
-*.dll
-.env
-__pycache__/
+# --- Private user data: NEVER commit -------------------------------------
+# Databases, playlists, logs, caches and keys contain IPTV credentials and
+# stream URLs. The app stores them in %LOCALAPPDATA%\MigeCast, never here.
+data/
+cache/
+logs/
+*.db
 *.db-journal
-cache/images/
-dist/
+*.db-wal
+*.db-shm
+*.sqlite
+*.log
+*.m3u
+*.m3u8
+!tests/fixtures/*.m3u
+!tests/fixtures/*.m3u8
+.env
+*.env
+secret.key
+config.json
+config.ini
+project_structure.txt
+
+# --- Python -------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# --- Build output -------------------------------------------------------
 build/
+dist/
+installer/Output/
+vendor/
 *.exe
 *.pkg
-*.spec
-*.log
-hooks/
-logs/" | Out-File -FilePath ".gitignore" -Encoding UTF8
+*.pyz
+*.zip
+
+# --- Editors / OS -------------------------------------------------------
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

@@ -1,428 +1,243 @@
+"""Live TV channel list (model/view: fast with thousands of channels)."""
 import logging
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QListWidget,
-                             QListWidgetItem, QLabel, QLineEdit, QComboBox, QPushButton)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QPixmap
-from models.channel import Channel
-from utils.image_cache import ImageCache
-from core.database import Database
 from typing import List
+
+from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QPainter
+from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QLineEdit, QListView, QStyle,
+                             QStyledItemDelegate, QVBoxLayout, QWidget)
+
+from core.db_access import Database
+from models.channel import Channel
+from ui.widgets import label
+from utils import themes
+from utils.image_cache import ImageLoader
 
 logger = logging.getLogger(__name__)
 
-
-class ChannelListItem(QWidget):
-    """Custom widget for channel list item with favorite button"""
-    
-    favorite_toggled = pyqtSignal(Channel)
-    
-    def __init__(self, channel: Channel, image_cache: ImageCache, is_favorite: bool = False):
-        super().__init__()
-        self.channel = channel
-        self.image_cache = image_cache
-        self._is_favorite = is_favorite
-        self.init_ui()
-    
-    def init_ui(self):
-        """Initialize UI"""
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 5, 10, 5)
-        
-        # Logo
-        self.logo_label = QLabel()
-        self.logo_label.setFixedSize(60, 40)
-        self.logo_label.setScaledContents(True)
-        
-        if self.channel.logo:
-            pixmap = self.image_cache.get_image(self.channel.logo, (60, 40))
-            if pixmap and not pixmap.isNull():
-                self.logo_label.setPixmap(pixmap)
-            else:
-                self.logo_label.setText("📺")
-                self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.logo_label.setStyleSheet("font-size: 20pt;")
-        else:
-            self.logo_label.setText("📺")
-            self.logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.logo_label.setStyleSheet("font-size: 20pt;")
-        
-        layout.addWidget(self.logo_label)
-        
-        # Connect to image ready signal
-        self.image_cache.image_ready.connect(self.on_image_ready)
-        
-        # Channel info
-        info_layout = QVBoxLayout()
-        
-        # Channel name
-        name_label = QLabel(self.channel.name)
-        name_label.setStyleSheet("font-size: 16pt; font-weight: bold; color: #1a1a1a;")
-        info_layout.addWidget(name_label)
-        
-        # Category
-        cat_label = QLabel(self.channel.category if self.channel.category else "Ostalo")
-        cat_label.setStyleSheet("font-size: 12pt; color: #666;")
-        info_layout.addWidget(cat_label)
-        
-        layout.addLayout(info_layout, stretch=1)
-        
-        # Favorite button
-        self.fav_btn = QPushButton("⭐" if self._is_favorite else "☆")
-        self.fav_btn.setFixedSize(40, 40)
-        self._update_button_style()
-        self.fav_btn.clicked.connect(self.on_favorite_clicked)
-        layout.addWidget(self.fav_btn)
-    
-    def _update_button_style(self):
-        """Update button style based on favorite status"""
-        if self._is_favorite:
-            # Bright yellow star for favorites - like in movies/series
-            self.fav_btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 28pt;
-                    color: #FFD700;
-                    background-color: transparent;
-                    border: none;
-                    padding: 0px;
-                }
-                QPushButton:hover {
-                    color: #FFA500;
-                }
-            """)
-        else:
-            # Gray/dim star for non-favorites
-            self.fav_btn.setStyleSheet("""
-                QPushButton {
-                    font-size: 28pt;
-                    color: #CCCCCC;
-                    background-color: transparent;
-                    border: none;
-                    padding: 0px;
-                }
-                QPushButton:hover {
-                    color: #4CAF50;
-                }
-            """)
-
-    def on_image_ready(self, url: str, pixmap: QPixmap):
-        """Update logo when image is downloaded"""
-        if url == self.channel.logo and not pixmap.isNull():
-            self.logo_label.setPixmap(pixmap)
-            self.logo_label.setStyleSheet("")
-
-    def on_favorite_clicked(self):
-        """Handle favorite button click"""
-        self.favorite_toggled.emit(self.channel)
-
-    def set_favorite(self, is_favorite: bool):
-        """Update favorite status"""
-        self._is_favorite = is_favorite
-        self.fav_btn.setText("⭐" if is_favorite else "☆")
-        self._update_button_style()
+ROW_H = 76
+STAR_W = 64
+FAVORITES = "⭐  Omiljeni kanali"
+ALL = "📺  Svi kanali"
 
 
-class LiveTVWidget(QWidget):
-    """Live TV channels widget with favorites"""
-    
-    channel_selected = pyqtSignal(Channel)
-    
+class ChannelModel(QAbstractListModel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.channels: List[Channel] = []
-        self.filtered_channels: List[Channel] = []
-        self.favorite_ids: set = set()
-        self.current_index = -1
-        
-        # Single shared ImageCache instance
-        self.image_cache = ImageCache()
-        
-        # Database
-        self.db = Database()
-        
-        self.init_ui()
-    
-    def init_ui(self):
-        """Initialize UI"""
+        self.favorites = set()
+        self.playing_id = None
+        self._rows_by_url = {}
+        ImageLoader.instance().image_ready.connect(self._on_image)
+
+    def set_channels(self, channels, favorites):
+        self.beginResetModel()
+        self.channels = channels
+        self.favorites = favorites
+        self._rows_by_url = {}
+        for row, channel in enumerate(channels):
+            if channel.logo:
+                self._rows_by_url.setdefault(channel.logo, []).append(row)
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):
+        return 0 if parent.isValid() else len(self.channels)
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if not index.isValid():
+            return None
+        channel = self.channels[index.row()]
+        if role == Qt.ItemDataRole.UserRole:
+            return channel
+        if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole):
+            return channel.name
+        return None
+
+    def _on_image(self, url):
+        for row in self._rows_by_url.get(url, ()):
+            idx = self.index(row)
+            self.dataChanged.emit(idx, idx)
+
+    def update_all(self):
+        if self.channels:
+            self.dataChanged.emit(self.index(0), self.index(len(self.channels) - 1))
+
+
+class ChannelDelegate(QStyledItemDelegate):
+    favorite_clicked = pyqtSignal(object)
+
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), ROW_H)
+
+    def paint(self, painter: QPainter, option, index):
+        channel: Channel = index.data(Qt.ItemDataRole.UserRole)
+        model: ChannelModel = index.model()
+        t = themes.current()
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(option.rect).adjusted(4, 3, -4, -3)
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
+        playing = channel.channel_id == model.playing_id
+        background = t["accent"] if (selected or playing) else (t["hover"] if hovered else t["surface"])
+        text_color = t["accent_text"] if (selected or playing) else t["text"]
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(background))
+        painter.drawRoundedRect(rect, 12, 12)
+
+        logo = QRectF(rect.x() + 10, rect.y() + 8, 88, rect.height() - 16)
+        pixmap = ImageLoader.instance().pixmap(channel.logo, int(logo.width()), int(logo.height())) if channel.logo else None
+        if pixmap is not None and not pixmap.isNull():
+            painter.drawPixmap(int(logo.x() + (logo.width() - pixmap.width()) / 2),
+                               int(logo.y() + (logo.height() - pixmap.height()) / 2), pixmap)
+        else:
+            glyph = QFont(painter.font())
+            glyph.setPointSize(22)
+            painter.setFont(glyph)
+            painter.setPen(QColor(text_color))
+            painter.drawText(logo, Qt.AlignmentFlag.AlignCenter, "📺")
+
+        name_font = QFont(painter.font())
+        name_font.setPointSize(15)
+        name_font.setBold(True)
+        painter.setFont(name_font)
+        painter.setPen(QColor(text_color))
+        text_rect = QRectF(logo.right() + 14, rect.y(), rect.width() - logo.width() - STAR_W - 40, rect.height())
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                         painter.fontMetrics().elidedText(("▶ " if playing else "") + channel.name,
+                                                          Qt.TextElideMode.ElideRight, int(text_rect.width())))
+
+        star_rect = self.star_rect(option.rect)
+        star_font = QFont(painter.font())
+        star_font.setPointSize(22)
+        painter.setFont(star_font)
+        is_favorite = channel.channel_id in model.favorites
+        painter.setPen(QColor(t["star"] if is_favorite else (text_color if hovered or selected else t["muted"])))
+        painter.drawText(star_rect, Qt.AlignmentFlag.AlignCenter, "★" if is_favorite else "☆")
+        painter.restore()
+
+    @staticmethod
+    def star_rect(rect) -> QRectF:
+        return QRectF(rect.right() - STAR_W - 6, rect.y(), STAR_W, rect.height())
+
+    def editorEvent(self, event, model, option, index):
+        if event.type() == QEvent.Type.MouseButtonRelease and self.star_rect(option.rect).contains(event.position()):
+            self.favorite_clicked.emit(index.data(Qt.ItemDataRole.UserRole))
+            return True
+        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick) and \
+                self.star_rect(option.rect).contains(event.position()):
+            return True
+        return super().editorEvent(event, model, option, index)
+
+
+class LiveTVWidget(QWidget):
+    channel_selected = pyqtSignal(Channel)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.all_channels: List[Channel] = []
+        self.db = None
         layout = QVBoxLayout(self)
-        
-        # Search and filter bar
-        filter_layout = QHBoxLayout()
-        
-        # Search
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍 Pretraži kanale...")
-        self.search_input.setStyleSheet("font-size: 16pt; padding: 10px;")
-        self.search_input.textChanged.connect(self.filter_channels)
-        filter_layout.addWidget(self.search_input, stretch=2)
-        
-        # Category filter
-        category_label = QLabel("📁 Kategorija:")
-        category_label.setStyleSheet("font-size: 16pt; font-weight: bold;")
-        filter_layout.addWidget(category_label)
-        
-        self.category_combo = QComboBox()
-        self.category_combo.setStyleSheet("""
-            QComboBox {
-                font-size: 16pt;
-                padding: 8px 10px;
-                min-width: 250px;
-                background-color: white;
-                border: 2px solid #4CAF50;
-                border-radius: 5px;
-            }
-            QComboBox::drop-down {
-                border: none;
-            }
-            QComboBox QAbstractItemView {
-                font-size: 14pt;
-                padding: 5px;
-                selection-background-color: #4CAF50;
-            }
-        """)
-        self.category_combo.currentTextChanged.connect(self.filter_channels)
-        filter_layout.addWidget(self.category_combo, stretch=1)
-        
-        layout.addLayout(filter_layout)
-        
-        # Channel list
-        self.channel_list = QListWidget()
-        self.channel_list.setStyleSheet("""
-            QListWidget {
-                font-size: 14pt;
-                background-color: white;
-                border: 2px solid #ccc;
-                border-radius: 5px;
-            }
-            QListWidget::item {
-                padding: 5px;
-                border-bottom: 1px solid #eee;
-            }
-            QListWidget::item:selected {
-                background-color: #4CAF50;
-                color: white;
-            }
-            QListWidget::item:hover {
-                background-color: #e8f5e9;
-            }
-        """)
-        self.channel_list.itemClicked.connect(self.on_channel_clicked)
-        layout.addWidget(self.channel_list)
-    
+        layout.setContentsMargins(12, 12, 8, 8)
+        layout.setSpacing(10)
+        self.category = QComboBox()
+        self.category.setMaxVisibleItems(14)
+        self.category.currentIndexChanged.connect(lambda _: self.filter_channels())
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("🔍  Pretražite kanale…")
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(lambda _: self._debounce.start(200))
+        self.view = QListView()
+        self.view.setUniformItemSizes(True)
+        self.view.setMouseTracking(True)
+        self.view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.view.verticalScrollBar().setSingleStep(30)
+        self.view.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.model = ChannelModel(self)
+        self.delegate = ChannelDelegate(self.view)
+        self.delegate.favorite_clicked.connect(self.toggle_favorite)
+        self.view.setModel(self.model)
+        self.view.setItemDelegate(self.delegate)
+        self.view.clicked.connect(self._on_clicked)
+        self.empty = label("", "muted", wrap=True)
+        self.empty.hide()
+        layout.addWidget(self.category)
+        layout.addWidget(self.search)
+        layout.addWidget(self.empty)
+        layout.addWidget(self.view, 1)
+        self._debounce = QTimer(self)
+        self._debounce.setSingleShot(True)
+        self._debounce.timeout.connect(self.filter_channels)
+
     def load_channels(self, channels: List[Channel]):
-        """Load channels"""
-        try:
-            if not channels:
-                logger.warning("load_channels called with empty list")
-                return
-            
-            self.channels = channels
-            
-            # Batch load favorite IDs
-            try:
-                self.favorite_ids = self.db.get_favorite_channel_ids()
-                logger.info(f"Loaded {len(self.favorite_ids)} favorite channels")
-            except Exception as e:
-                logger.error(f"Error loading favorites: {e}")
-                self.favorite_ids = set()
-            
-            # Extract and clean categories
-            categories_raw = set()
-            for ch in channels:
-                if ch.category:
-                    categories_raw.add(ch.category)
-            
-            # Clean category names
-            categories_clean = {}
-            for cat in categories_raw:
-                clean_name = self.clean_category_name(cat)
-                categories_clean[cat] = clean_name
-            
-            # Sort categories by clean name
-            categories_sorted = sorted(categories_raw, key=lambda c: categories_clean[c])
-            
-            # Populate category combo
-            self.category_combo.blockSignals(True)
-            self.category_combo.clear()
-            
-            # Add special categories first
-            self.category_combo.addItem("⭐ Favoriti", "FAVORITES")
-            self.category_combo.addItem("📺 Svi Kanali", "ALL")
-            
-            # Add regular categories with clean names
-            for cat in categories_sorted:
-                clean_name = categories_clean[cat]
-                self.category_combo.addItem(clean_name, cat)  # Display clean, store original
-            
-            # Set default to Favoriti if there are favorites, otherwise Svi Kanali
-            if self.favorite_ids:
-                self.category_combo.setCurrentIndex(0)  # Favoriti
-            else:
-                self.category_combo.setCurrentIndex(1)  # Svi Kanali
-            
-            self.category_combo.blockSignals(False)
-            
-            self.filter_channels()
-            
-            logger.info(f"Loaded {len(channels)} channels with {len(categories_raw)} categories")
-        except Exception as e:
-            logger.error(f"Error in load_channels: {e}", exc_info=True)
-    
-    def clean_category_name(self, category: str) -> str:
-        """Clean and format category name for display"""
-        if not category:
-            return "Ostalo"
-        
-        # Remove leading/trailing pipes and whitespace
-        clean = category.strip().strip('|').strip()
-        
-        # Map common prefixes to flags/icons
-        country_map = {
-            'RS': '🇷🇸 Srpski',
-            'HR': '🇭🇷 Hrvatski',
-            'BA': '🇧🇦 Bosanski',
-            'SI': '🇸🇮 Slovenački',
-            'MK': '🇲🇰 Makedonski',
-            'ME': '🇲🇪 Crnogorski',
-            'EXYU': '🌍 Ex-Yu',
-            'RU': '🇷🇺 Ruski',
-            'DE': '🇩🇪 Nemački',
-            'UK': '🇬🇧 Britanski',
-            'US': '🇺🇸 Američki',
-            'IT': '🇮🇹 Italijanski',
-            'FR': '🇫🇷 Francuski',
-            'ES': '🇪🇸 Španski',
-            'TR': '🇹🇷 Turski',
-            'GR': '🇬🇷 Grčki',
-            'AL': '🇦🇱 Albanski',
-        }
-        
-        # Check if starts with country code
-        for code, name in country_map.items():
-            if clean.upper().startswith(code):
-                # Remove code and return clean name
-                rest = clean[len(code):].strip().strip('|').strip('-').strip()
-                if rest:
-                    return f"{name} - {rest}"
-                return name
-        
-        # If no country code, just return cleaned
-        return clean if clean else "Ostalo"
-    
+        self.db = Database()
+        self.all_channels = channels
+        categories = sorted({c.category for c in channels if c.category}, key=str.lower)
+        favorites = self.db.get_favorite_channel_ids()
+        self.category.blockSignals(True)
+        self.category.clear()
+        self.category.addItems([FAVORITES, ALL] + categories)
+        self.category.setCurrentText(FAVORITES if favorites else ALL)
+        self.category.blockSignals(False)
+        self.filter_channels()
+
     def filter_channels(self):
-        """Filter channels based on search and category"""
-        try:
-            self.channel_list.clear()
-            
-            search_text = self.search_input.text().lower()
-            selected_category_data = self.category_combo.currentData()
-            
-            # Filter channels
-            filtered = []
-            for channel in self.channels:
-                # Category filter
-                if selected_category_data == "FAVORITES":
-                    if channel.channel_id not in self.favorite_ids:
-                        continue
-                elif selected_category_data != "ALL":
-                    if channel.category != selected_category_data:
-                        continue
-                
-                # Search filter
-                if search_text and search_text not in channel.name.lower():
-                    continue
-                
-                filtered.append(channel)
-            
-            self.filtered_channels = filtered
-            
-            # Populate list (limit to first 500 for performance)
-            for channel in filtered[:500]:
-                item = QListWidgetItem()
-                item.setSizeHint(QSize(0, 80))
-                
-                # Pass shared image_cache instance and favorite status
-                is_favorite = channel.channel_id in self.favorite_ids
-                widget = ChannelListItem(channel, self.image_cache, is_favorite)
-                widget.favorite_toggled.connect(self.toggle_favorite)
-                
-                self.channel_list.addItem(item)
-                self.channel_list.setItemWidget(item, widget)
-                
-                # Store channel reference
-                item.setData(Qt.ItemDataRole.UserRole, channel)
-            
-            logger.debug(f"Filtered to {len(filtered)} channels")
-        except Exception as e:
-            logger.error(f"Error in filter_channels: {e}", exc_info=True)
-    
+        favorites = self.db.get_favorite_channel_ids() if self.db else set()
+        choice = self.category.currentText()
+        if choice == FAVORITES:
+            channels = [c for c in self.all_channels if c.channel_id in favorites]
+        elif choice == ALL or not choice:
+            channels = self.all_channels
+        else:
+            channels = [c for c in self.all_channels if c.category == choice]
+        words = self.search.text().strip().lower().split()
+        if words:
+            channels = [c for c in channels if all(w in c.name.lower() for w in words)]
+        ImageLoader.instance().cancel_queued()
+        self.model.set_channels(channels, favorites)
+        if not channels:
+            self.empty.setText("Nema omiljenih kanala. Kliknite ☆ pored kanala da ga dodate."
+                               if choice == FAVORITES and not words else "Nema kanala za ovu pretragu.")
+            self.empty.show()
+        else:
+            self.empty.hide()
+
     def toggle_favorite(self, channel: Channel):
-        """Toggle channel favorite status"""
-        try:
-            logger.info(f"Toggle favorite clicked - Channel: {channel.name}, ID: {channel.channel_id}")
+        if not self.db:
+            return
+        self.db.toggle_channel_favorite(channel.channel_id, channel.name)
+        self.model.favorites = self.db.get_favorite_channel_ids()
+        if self.category.currentText() == FAVORITES:
+            self.filter_channels()
+        else:
+            self.model.update_all()
 
-            if channel.channel_id in self.favorite_ids:
-                # Remove from favorites
-                self.db.remove_channel_favorite(channel.channel_id)
-                self.favorite_ids.discard(channel.channel_id)
-                logger.info(f"Removed from favorites: {channel.name} (ID: {channel.channel_id})")
-            else:
-                # Add to favorites
-                self.db.add_channel_favorite(channel.channel_id, channel.name)
-                self.favorite_ids.add(channel.channel_id)
-                logger.info(f"Added to favorites: {channel.name} (ID: {channel.channel_id})")
-
-            # Refresh display
-            self.refresh_favorites()
-        except Exception as e:
-            logger.error(f"Error toggling favorite: {e}", exc_info=True)
-    
-    def refresh_favorites(self):
-        """Refresh favorite status for all visible items"""
-        try:
-            # Reload favorite IDs from database
-            self.favorite_ids = self.db.get_favorite_channel_ids()
-            
-            # Update all visible widgets
-            for i in range(self.channel_list.count()):
-                item = self.channel_list.item(i)
-                widget = self.channel_list.itemWidget(item)
-                if widget and hasattr(widget, 'channel'):
-                    is_favorite = widget.channel.channel_id in self.favorite_ids
-                    widget.set_favorite(is_favorite)
-            
-            logger.debug("Favorites refreshed")
-        except Exception as e:
-            logger.error(f"Error refreshing favorites: {e}")
-    
-    def on_channel_clicked(self, item: QListWidgetItem):
-        """Handle channel click"""
-        channel = item.data(Qt.ItemDataRole.UserRole)
+    def _on_clicked(self, index):
+        channel = index.data(Qt.ItemDataRole.UserRole)
         if channel:
+            self.set_playing(channel)
             self.channel_selected.emit(channel)
-    
+
+    def set_playing(self, channel):
+        self.model.playing_id = channel.channel_id if channel else None
+        self.model.update_all()
+
+    def _step(self, delta: int):
+        count = self.model.rowCount()
+        if not count:
+            return
+        current = self.view.currentIndex().row()
+        row = (current + delta) % count if current >= 0 else 0
+        index = self.model.index(row)
+        self.view.setCurrentIndex(index)
+        self.view.scrollTo(index)
+        self._on_clicked(index)
+
     def select_next_channel(self):
-        """Select next channel"""
-        if not self.filtered_channels:
-            return
-        
-        self.current_index = (self.current_index + 1) % len(self.filtered_channels)
-        self.channel_list.setCurrentRow(self.current_index)
-        self.channel_selected.emit(self.filtered_channels[self.current_index])
-    
+        self._step(1)
+
     def select_previous_channel(self):
-        """Select previous channel"""
-        if not self.filtered_channels:
-            return
-        
-        self.current_index = (self.current_index - 1) % len(self.filtered_channels)
-        self.channel_list.setCurrentRow(self.current_index)
-        self.channel_selected.emit(self.filtered_channels[self.current_index])
-    
+        self._step(-1)
+
     def cleanup(self):
-        """Cleanup resources"""
-        try:
-            if hasattr(self, 'image_cache'):
-                self.image_cache.cleanup()
-                logger.info("LiveTVWidget image cache cleaned up")
-        except Exception as e:
-            logger.error(f"Error during LiveTVWidget cleanup: {e}")
+        pass
