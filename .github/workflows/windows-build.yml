@@ -163,19 +163,19 @@ jobs:
           $tag = "${{ inputs.release_tag }}"
           if (-not $tag) { $tag = "${{ github.ref_name }}" }
           $notes = @"
-MigeCast IPTV ${{ steps.version.outputs.version }} za Windows 10/11 (64-bit).
+          MigeCast IPTV ${{ steps.version.outputs.version }} za Windows 10/11 (64-bit).
 
-**Instalacija**
-1. Preuzmite ``$name`` ispod (Assets).
-2. Pokrenite ga i kliknite **Dalje → Instaliraj**. Administratorska prava nisu potrebna.
-3. Pokrenite **MigeCast IPTV** sa radne površine, otvorite **Podešavanja** i nalepite link svoje IPTV liste.
+          **Instalacija**
+          1. Preuzmite ``$name`` ispod (Assets).
+          2. Pokrenite ga i kliknite **Dalje → Instaliraj**. Administratorska prava nisu potrebna.
+          3. Pokrenite **MigeCast IPTV** sa radne površine, otvorite **Podešavanja** i nalepite link svoje IPTV liste.
 
-Nije potrebno instalirati Python, VLC niti bilo šta drugo. Nova verzija se instalira preko stare i čuva listu, omiljene i istoriju gledanja.
+          Nije potrebno instalirati Python, VLC niti bilo šta drugo. Nova verzija se instalira preko stare i čuva listu, omiljene i istoriju gledanja.
 
-Ako Windows prikaže „Windows je zaštitio vaš računar“: **Više informacija → Ipak pokreni** (installer još nema digitalni potpis).
+          Ako Windows prikaže „Windows je zaštitio vaš računar“: **Više informacija → Ipak pokreni** (installer još nema digitalni potpis).
 
-SHA-256: ``${{ steps.hash.outputs.sha256 }}``
-"@
+          SHA-256: ``${{ steps.hash.outputs.sha256 }}``
+          "@
           $extra = @()
           if ($tag -like "*-*") { $extra += "--prerelease" } else { $extra += "--latest" }   # e.g. v2.0.0-beta1
           # --target creates the tag on the built commit when it does not exist yet.
