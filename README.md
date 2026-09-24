@@ -1,16 +1,12 @@
 # MigeCast IPTV
 
-**MigeCast IPTV is a Windows program for watching live TV channels, movies and
-series from your IPTV subscription.** It is made for people who just want to
-watch: three big buttons on the home screen (**TV**, **Filmovi**, **Serije**),
-large text, and everything can be done with the mouse. Paste the link from your
-IPTV provider once, and the program remembers your list, favorites and where
-you stopped watching. The installer is a single file, and you don't need to
-install anything else (VLC, Python and all libraries are included).
-
-*MigeCast IPTV je Windows program za gledanje TV kanala, filmova i serija sa
-vaše IPTV pretplate: velika dugmad, velika slova, sve mišem. Jedan fajl za
-instalaciju, ništa drugo nije potrebno.*
+**MigeCast IPTV is a Windows app for watching live TV, movies and series from
+your IPTV subscription.** It is built for people who just want to watch: the
+home screen has three large buttons (**TV**, **Filmovi** for movies, **Serije**
+for series), the text is big, and everything works with a mouse. Paste the
+playlist link from your IPTV provider once, and MigeCast remembers your
+channels, favorites and where you stopped watching. It installs from a single
+file, with nothing else to set up: VLC, Python and all libraries are included.
 
 The user interface is in Serbian (Latin script). MigeCast does not provide any
 channels; it plays the M3U/M3U8 playlist or Xtream Codes account supplied by
@@ -33,7 +29,7 @@ your IPTV provider.
 1. Download `MigeCast-Setup-<version>.exe` (one file) from the download page / GitHub Releases.
 2. Run it and follow the steps. No administrator rights are needed.
 3. Start **MigeCast IPTV** from the desktop or the Start menu.
-4. Open **Podešavanja**, paste the playlist link (or pick a file, or enter the Xtream server, user and password) and click **Učitaj listu**.
+4. Open **Podešavanja** (Settings), paste the playlist link (or pick a file, or enter the Xtream server, user and password) and click **Učitaj listu** (Load list).
 
 Nothing else has to be installed: Python, Qt, libVLC with all plugins and the
 Microsoft C/C++ runtime DLLs are part of the installer.
@@ -42,8 +38,8 @@ Microsoft C/C++ runtime DLLs are part of the installer.
 
 - M3U/M3U8 from a file or URL, paste from clipboard, automatic detection of full Xtream `get.php` links, Xtream server/user/password form.
 - Live TV list with favorites (★), next/previous channel, auto-reconnect when a stream drops.
-- Movies and series as poster grids with search, categories, *Favoriti* and *Nastavi gledanje*.
-- Series screen: seasons as large buttons, episodes as rows with `S01E03`, title, progress and *Pusti / Nastavi / Od početka / Odgledano*; episode search and sort; remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
+- Movies and series as poster grids with search, categories, *Favoriti* (Favorites) and *Nastavi gledanje* (Continue watching).
+- Series screen: seasons as large buttons, episodes as rows with `S01E03`, title, progress and *Pusti / Nastavi / Od početka / Odgledano* (Play / Resume / From start / Watched); episode search and sort; remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
 - Watch progress with resume for movies and episodes.
 - Dark, light and high-contrast themes.
 
@@ -59,7 +55,7 @@ Microsoft C/C++ runtime DLLs are part of the installer.
 | Automatic database backups before schema migrations | `%LOCALAPPDATA%\MigeCast\backups` |
 
 The program folder (`%LOCALAPPDATA%\Programs\MigeCast`) contains only program
-files. The folder can be opened from *Podešavanja → O programu*.
+files. The folder can be opened from *Podešavanja → O programu* (Settings → About).
 
 **Removing all data:** uninstall MigeCast, then delete `%LOCALAPPDATA%\MigeCast`.
 
@@ -81,7 +77,7 @@ When the database schema changes, MigeCast first writes a backup to
 Data of version 1.x (portable folder with `data\migecast.db` next to the
 program) is copied automatically on first start if MigeCast is started from
 that folder, or can be imported with *Podešavanja → Uvezi podatke iz stare
-verzije*. Originals are never modified or deleted.
+verzije* (Settings → Import data from the old version). Originals are never modified or deleted.
 
 ## Building the installer
 
@@ -144,7 +140,7 @@ window in well under a second on a normal PC.
 
 The main window is shown with only the header and the home screen; the other
 pages are built right after it is visible. The database, playlist cache and
-images are loaded after that; those load in background threads while a large *Učitavam listu…*
+images are loaded after that; those load in background threads while a large *Učitavam listu…* (Loading list…)
 message is shown. libVLC is loaded on the first playback. Every start logs a
 profile (`[startup] ...` lines in the log). Measured in the development
 container (Linux, offscreen Qt, 8,700-item real-world database copy):
