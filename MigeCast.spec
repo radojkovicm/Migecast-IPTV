@@ -26,7 +26,7 @@ datas = [
 ]
 
 excludes = [
-    "tkinter", "unittest", "pydoc_data", "test", "numpy", "pandas", "matplotlib", "IPython",
+    "unittest", "pydoc_data", "test", "numpy", "pandas", "matplotlib", "IPython",
     "PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets", "PyQt6.QtWebEngineQuick", "PyQt6.QtQml",
     "PyQt6.QtQuick", "PyQt6.QtQuick3D", "PyQt6.QtQuickWidgets", "PyQt6.Qt3DCore", "PyQt6.QtMultimedia",
     "PyQt6.QtMultimediaWidgets", "PyQt6.QtPdf", "PyQt6.QtPdfWidgets", "PyQt6.QtBluetooth",
@@ -52,9 +52,23 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# Splash screen drawn by the bootloader right after double-click, before the
+# Python runtime and the Qt DLLs are loaded (a cold first start can take a few
+# seconds while Windows reads and virus-scans them). main.py closes it as soon
+# as the main window is visible.
+splash = Splash(
+    str(ROOT / "resources" / "splash.png"),
+    binaries=a.binaries,
+    datas=a.datas,
+    text_pos=None,
+    minify_script=True,
+    always_on_top=True,
+)
+
 exe = EXE(
     pyz,
     a.scripts,
+    splash,
     [],
     exclude_binaries=True,
     name="MigeCast",
@@ -70,6 +84,7 @@ exe = EXE(
 
 coll = COLLECT(
     exe,
+    splash.binaries,
     a.binaries,
     a.datas,
     strip=False,

@@ -116,8 +116,15 @@ one-folder build once, and every later start is as fast as possible.
 
 ## Startup performance
 
-The main window is shown before the database, playlist cache or images are
-touched; those load in background threads while a large *Učitavam listu…*
+Double-clicking shows a splash screen immediately: the PyInstaller bootloader
+draws it before Python and Qt are loaded. The first start after installation
+("cold") is dominated by Windows reading and virus-scanning the Qt DLLs once,
+and the splash covers that time. Every later start ("warm") shows the main
+window in well under a second on a normal PC.
+
+The main window is shown with only the header and the home screen; the other
+pages are built right after it is visible. The database, playlist cache and
+images are loaded after that; those load in background threads while a large *Učitavam listu…*
 message is shown. libVLC is loaded on the first playback. Every start logs a
 profile (`[startup] ...` lines in the log). Measured in the development
 container (Linux, offscreen Qt, 8,700-item real-world database copy):
@@ -131,8 +138,9 @@ container (Linux, offscreen Qt, 8,700-item real-world database copy):
 | Cached playlist shown | ~650 ms |
 
 The Windows CI job measures the installed build (including the PyInstaller
-bootstrap) on every run and fails if the window takes longer than 5 s; the
-numbers are in the `installer-test-reports` artifact.
+bootloader) on every run, prints every phase, and fails if a warm start takes
+longer than 3 s on average or a cold start longer than 10 s. The numbers are
+also in the `installer-test-reports` artifact.
 
 ## Development
 

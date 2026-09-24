@@ -62,7 +62,32 @@ def main():
         entries += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(blob), offset + len(payload))
         payload += blob
     (out / "migecast.ico").write_bytes(header + entries + payload)
-    print("icon written")
+    draw_splash().save(str(out / "splash.png"))
+    print("icon and splash written")
+
+
+def draw_splash() -> QImage:
+    """Shown by the PyInstaller bootloader before Python/Qt are loaded."""
+    from PyQt6.QtGui import QFont
+    image = QImage(560, 300, QImage.Format.Format_RGB32)
+    image.fill(QColor("#15171a"))
+    p = QPainter(image)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(QPen(QColor("#3fae5a"), 6))
+    p.drawRect(3, 3, 553, 293)
+    p.drawImage(40, 70, draw(160))
+    p.setPen(QColor("#f2f2f2"))
+    font = QFont("DejaVu Sans")
+    font.setPixelSize(40)
+    font.setBold(True)
+    p.setFont(font)
+    p.drawText(QRectF(220, 90, 320, 60), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "MigeCast")
+    font.setPixelSize(26)
+    font.setBold(False)
+    p.setFont(font)
+    p.drawText(QRectF(220, 150, 320, 40), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, "Pokrećem program…")
+    p.end()
+    return image
 
 
 if __name__ == "__main__":

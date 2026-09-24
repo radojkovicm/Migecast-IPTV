@@ -25,9 +25,15 @@ def _process_start_offset_ms() -> float:
         import ctypes
         from ctypes import wintypes
 
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        # Declare types: the process handle is 64-bit; the default ctypes
+        # "int" would truncate it and the call would silently fail.
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
         creation, exit_, kernel, user = (wintypes.FILETIME() for _ in range(4))
-        handle = ctypes.windll.kernel32.GetCurrentProcess()
-        ok = ctypes.windll.kernel32.GetProcessTimes(
+        handle = kernel32.GetCurrentProcess()
+        ok = kernel32.GetProcessTimes(
             handle, ctypes.byref(creation), ctypes.byref(exit_),
             ctypes.byref(kernel), ctypes.byref(user))
         if not ok:
