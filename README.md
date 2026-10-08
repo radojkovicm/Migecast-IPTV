@@ -39,7 +39,7 @@ Microsoft C/C++ runtime DLLs are part of the installer.
 - M3U/M3U8 from a file or URL, paste from clipboard, automatic detection of full Xtream `get.php` links, Xtream server/user/password form.
 - Live TV list with favorites (★), next/previous channel, auto-reconnect when a stream drops.
 - Movies and series as poster grids with search, categories, *Favoriti* (Favorites) and *Nastavi gledanje* (Continue watching).
-- Series screen: seasons as large buttons, episodes as rows with `S01E03`, title, progress and *Pusti / Nastavi / Od početka / Odgledano* (Play / Resume / From start / Watched); episode search and sort; remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
+- Series screen: seasons in a clearly separated panel, five large episode rows per page with `S01E03`, title and watched status; double-click an episode to play it; remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
 - Watch progress with resume for movies and episodes.
 - Dark, light and high-contrast themes.
 
@@ -113,7 +113,7 @@ pwsh installer\test_installer.ps1 -Installer installer\Output\MigeCast-Setup-$ve
 ### Checksum
 
 ```powershell
-Get-FileHash installer\Output\MigeCast-Setup-2.0.0.exe -Algorithm SHA256
+Get-FileHash installer\Output\MigeCast-Setup-2.0.1.exe -Algorithm SHA256
 ```
 
 CI writes `MigeCast-Setup-<version>.exe.sha256` next to the installer and
@@ -141,7 +141,10 @@ window in well under a second on a normal PC.
 The main window is shown with only the header and the home screen; the other
 pages are built right after it is visible. The database, playlist cache and
 images are loaded after that; those load in background threads while a large *Učitavam listu…* (Loading list…)
-message is shown. libVLC is loaded on the first playback. Every start logs a
+message is shown. libVLC is prepared in a background thread as soon as the
+main window appears, so the first playback does not freeze the interface. If
+Windows needs longer to scan its files, a clear *Pokrećem video plejer…*
+message is shown. Every start logs a
 profile (`[startup] ...` lines in the log). Measured in the development
 container (Linux, offscreen Qt, 8,700-item real-world database copy):
 
@@ -162,7 +165,7 @@ also in the `installer-test-reports` artifact.
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python -m pytest -q     # 70 tests
+QT_QPA_PLATFORM=offscreen python -m pytest -q     # 75 tests
 python main.py --windowed                         # run from source (needs VLC installed or vendor/vlc)
 python tools/screenshots.py shots dark            # render all pages with synthetic data
 python tools/check_repo_secrets.py                # fail on committed private data
