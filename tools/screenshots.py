@@ -147,13 +147,10 @@ def main(out: Path, theme: str = "dark"):
     groups = window.series_page.groups
     window.open_series(("Duga Demo Serija", groups["Duga Demo Serija"]))
     shot("06-series-detail")
-    window.series_detail.search.setText("E07")
-    shot("07-series-search")
-    window.series_detail.search.clear()
     window.open_series(("Serija Bez Sezone", groups["Serija Bez Sezone"]))
-    shot("08-series-no-season")
+    shot("07-series-no-season")
     window.go(SETTINGS)
-    shot("09-settings")
+    shot("08-settings")
     window.close()
 
 

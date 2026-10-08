@@ -3,7 +3,7 @@
 Startup is asynchronous: the window is shown immediately, the database and
 the cached playlist are loaded by :class:`ui.workers.StartupWorker` while a
 large "Učitavam listu…" message is visible. Nothing heavy runs on the GUI
-thread and VLC is initialised only when the first video starts.
+thread and VLC is preloaded in a worker as soon as the window appears.
 """
 import logging
 import os
@@ -52,10 +52,16 @@ class MainWindow(QMainWindow):
         self.current_series_key = ""
         self._loaded_once = False
         self._pages_built = False
+        self._playback_wait_overlay = False
 
         self.setWindowTitle("MigeCast IPTV")
         self.setMinimumSize(1280, 720)
         self._build()
+        self.video_player.initialization_finished.connect(self._on_player_initialized)
+        self.playback_wait_timer = QTimer(self)
+        self.playback_wait_timer.setSingleShot(True)
+        self.playback_wait_timer.setInterval(30000)
+        self.playback_wait_timer.timeout.connect(self._on_playback_wait_timeout)
         self._shortcuts()
         startup_profiler.mark("main_window_built")
 
@@ -183,7 +189,6 @@ class MainWindow(QMainWindow):
             self.stack.addWidget(page)
 
         startup_profiler.mark("pages_built")
-
     def _shortcuts(self):
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.go_back)
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self, self._backspace)
@@ -273,6 +278,11 @@ class MainWindow(QMainWindow):
         """Called right after the window is shown (the style sheet is already
         applied in main.py, so it is not applied a second time here)."""
         themes.set_current(self.config.get("appearance", "theme", "dark"))
+        # Start the expensive one-time libVLC/plugin scan immediately after the
+        # window appears. It stays on a worker thread, so navigation remains
+        # responsive and the first movie/episode no longer initiates the work.
+        if not self.smoke_test and os.environ.get("QT_QPA_PLATFORM", "").lower() != "offscreen":
+            self.video_player.initialize_async()
         self.home_status.setText("Učitavam listu…")
         self.overlay.start("Učitavam listu…", cancellable=False)
         # Database and playlist cache load in a background thread while the
@@ -496,18 +506,50 @@ class MainWindow(QMainWindow):
         from core.playlist_service import resolve_stream_url
         return resolve_stream_url(url, self.playlist)
 
+    def _prepare_playback(self):
+        """Make a slow first VLC start visible instead of looking frozen."""
+        if self.video_player.is_initialized:
+            return
+        self._playback_wait_overlay = True
+        self.overlay.start("Pokrećem video plejer…", cancellable=False)
+        self.overlay.set_detail("Prvo pokretanje može potrajati. Program i dalje radi.")
+        self.playback_wait_timer.start()
+        self.video_player.initialize_async()
+
+    def _on_player_initialized(self, ok: bool):
+        if not self._playback_wait_overlay:
+            return
+        self._playback_wait_overlay = False
+        self.playback_wait_timer.stop()
+        self.overlay.finish()
+        if not ok:
+            self.toast.show_message("Video plejer nije mogao da se pokrene.")
+
+    def _on_playback_wait_timeout(self):
+        if not self._playback_wait_overlay or self.video_player.is_initialized:
+            return
+        self._playback_wait_overlay = False
+        self.overlay.finish()
+        self.toast.show_message("Video plejer se nije pokrenuo. Ponovo pokrenite program.", 7000)
+
     def play_channel(self, channel):
         logger.info("Playing a TV channel")
+        self._prepare_playback()
         self.player_widget.play_url(self._url(channel.url), content_type="tv", content_title=channel.name)
 
     def play_vod(self, vod, resume_seconds: int = 0):
         self.current_vod = vod
+        self._prepare_playback()
         self.player_widget.play_url(self._url(vod.url), content_type="vod", content_title=vod.name,
                                     stream_id=str(vod.stream_id), resume_position=resume_seconds or None)
-        QTimer.singleShot(400, self.player_widget.enter_fullscreen)
+        if self.video_player.is_initialized:
+            QTimer.singleShot(400, self.player_widget.enter_fullscreen)
+        else:
+            self.player_widget.fullscreen_when_ready = True
 
     def play_episode(self, episode, ordered: list, resume_seconds: int = 0):
         from core.database import Database
+        self._prepare_playback()
         self.series_queue = list(ordered)
         self.series_index = next((i for i, e in enumerate(self.series_queue) if e.stream_id == episode.stream_id), -1)
         key = self.current_series_key
@@ -524,7 +566,10 @@ class MainWindow(QMainWindow):
                                     content_title=title, stream_id=str(episode.stream_id),
                                     resume_position=resume_seconds or None)
         if not was_fullscreen:
-            QTimer.singleShot(400, self.player_widget.enter_fullscreen)
+            if self.video_player.is_initialized:
+                QTimer.singleShot(400, self.player_widget.enter_fullscreen)
+            else:
+                self.player_widget.fullscreen_when_ready = True
         if self.stack.currentIndex() == SERIES_DETAIL:
             self.series_detail.focus_episode(episode)
 

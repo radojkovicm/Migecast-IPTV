@@ -247,13 +247,6 @@ class VideoFrame(QFrame):
 
     def _emit_single_click(self):
         if self.pending_click:
-            logger.info("🖱️ Single click CONFIRMED (timeout) - emitting single_clicked")
-            self.pending_click = False
-            self.single_clicked.emit()
-
-    
-    def _emit_single_click(self):
-        if self.pending_click:
             self.pending_click = False
             self.single_clicked.emit()
     
@@ -400,6 +393,12 @@ class PlayerWidget(QWidget):
         # NOVO - Tracking za Continue Watching
         self.current_stream_id = None
         self.current_stream_title = None
+        self._pending_playback = None
+        self.fullscreen_when_ready = False
+        self.vlc_init_timer = QTimer(self)
+        self.vlc_init_timer.setSingleShot(True)
+        self.vlc_init_timer.setInterval(30000)
+        self.vlc_init_timer.timeout.connect(self._on_vlc_init_timeout)
         self.progress_save_timer = QTimer()
         self.progress_save_timer.timeout.connect(self._save_watch_progress)
         self.progress_save_timer.setInterval(10000)  # Čuva svakih 10 sekundi
@@ -448,6 +447,7 @@ class PlayerWidget(QWidget):
         
         # Connect to VLC state changes for auto-play detection
         self.video_player.state_changed.connect(self._on_video_state_changed)
+        self.video_player.initialization_finished.connect(self._on_vlc_initialized)
         
         logger.info("PlayerWidget initialized with auto-play support")
     
@@ -457,29 +457,27 @@ class PlayerWidget(QWidget):
         layout.setSpacing(0)
         
         # Video frame container
-        video_container = QWidget()
-        video_container_layout = QVBoxLayout(video_container)
-        video_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.video_container = QWidget()
+        self.video_container_layout = QVBoxLayout(self.video_container)
+        self.video_container_layout.setContentsMargins(0, 0, 0, 0)
 
         self.video_frame = VideoFrame()
         self.video_frame.setMinimumSize(640, 480)
-        video_container_layout.addWidget(self.video_frame)
+        self.video_container_layout.addWidget(self.video_frame)
         
         # Auto-play overlay
-        self.autoplay_overlay = AutoPlayOverlay(video_container)
+        self.autoplay_overlay = AutoPlayOverlay(self.video_container)
         self.autoplay_overlay.skip_clicked.connect(self._on_autoplay_skip)
         self.autoplay_overlay.cancel_clicked.connect(self._on_autoplay_cancel)
         self.autoplay_overlay.hide()
 
         # Transparent click overlay OVER video
-        self.click_overlay = QLabel(video_container)
+        self.click_overlay = QLabel(self.video_container)
         self.click_overlay.setStyleSheet("background: transparent;")
         self.click_overlay.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.click_overlay.raise_()
 
-        layout.addWidget(video_container)
-        
-        layout.addWidget(self.video_frame)
+        layout.addWidget(self.video_container)
         
         # Fullscreen controls
         self.fullscreen_controls = FullscreenControls()
@@ -773,11 +771,6 @@ class PlayerWidget(QWidget):
         self.click_times.clear()
         self.mouse_poll_timer.start()
         
-        # End detection timer for auto-play
-        self.end_detection_timer = QTimer()
-        self.end_detection_timer.timeout.connect(self._check_episode_end)
-        self.end_detection_timer.setInterval(1000)
-        
         logger.info("Fullscreen entered")
     
     def _setup_fullscreen_controls(self):
@@ -857,8 +850,8 @@ class PlayerWidget(QWidget):
         self.fullscreen_controls.hide_timer.stop()
         
         # Move video frame back
-        self.video_frame.setParent(self)
-        self.layout().insertWidget(0, self.video_frame)
+        self.video_frame.setParent(self.video_container)
+        self.video_container_layout.insertWidget(0, self.video_frame)
         
         # Move controls back
         self.fullscreen_controls.setParent(self)
@@ -924,6 +917,22 @@ class PlayerWidget(QWidget):
         self.content_type = content_type
         logger.info(f"▶️ Playing URL with content_type: '{self.content_type}'")
 
+        if not self.video_player.is_initialized:
+            self._pending_playback = {
+                "url": url,
+                "content_type": content_type,
+                "next_episode_info": next_episode_info,
+                "content_title": content_title,
+                "stream_id": stream_id,
+                "resume_position": resume_position,
+            }
+            self.status_label.setText("Pokrećem video plejer…")
+            self.play_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.vlc_init_timer.start()
+            self.video_player.initialize_async()
+            return
+
         try:
             self._set_vlc_output_internal()
             
@@ -981,8 +990,38 @@ class PlayerWidget(QWidget):
                 QTimer.singleShot(4000, self._hide_title_overlay)
             else:
                 self.title_overlay.hide()
+
+    def _on_vlc_initialized(self, ok: bool):
+        """Continue the last requested playback after background VLC startup."""
+        self.vlc_init_timer.stop()
+        self.play_btn.setEnabled(True)
+        pending, self._pending_playback = self._pending_playback, None
+        if not ok:
+            self.status_label.setText("Video plejer nije mogao da se pokrene")
+            self.is_playing = False
+            return
+        if pending:
+            self.status_label.setText("Povezujem se…")
+            self.play_url(**pending)
+            if self.fullscreen_when_ready:
+                self.fullscreen_when_ready = False
+                QTimer.singleShot(400, self.enter_fullscreen)
+        else:
+            self.status_label.setText("Video plejer je spreman")
+
+    def _on_vlc_init_timeout(self):
+        """Keep the application usable even if a damaged VLC install hangs."""
+        if not self.video_player.is_initialized:
+            self._pending_playback = None
+            self.fullscreen_when_ready = False
+            self.play_btn.setEnabled(True)
+            self.status_label.setText("Video plejer se nije pokrenuo. Ponovo pokrenite program.")
+            logger.error("VLC initialisation did not finish within 30 seconds")
     
     def toggle_play_pause(self):
+        if not self.video_player.is_initialized:
+            self.status_label.setText("Video plejer još nije spreman")
+            return
         try:
             if self.is_playing:
                 self.video_player.pause()
@@ -1004,6 +1043,10 @@ class PlayerWidget(QWidget):
     def stop(self):
         try:
             logger.info("⏹ Stopping playback")
+            self._pending_playback = None
+            self.fullscreen_when_ready = False
+            self.vlc_init_timer.stop()
+            self.play_btn.setEnabled(True)
 
             # NOVO - Sačuvaj progress pre stopiranja
             self._save_watch_progress()

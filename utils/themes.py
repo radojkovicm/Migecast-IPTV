@@ -112,6 +112,21 @@ QListView, QListWidget {{ background: {t['bg']}; border: none; outline: 0; }}
 QListWidget::item {{ min-height: 56px; padding: 6px 12px; border-radius: 10px; margin: 3px 4px; }}
 QListWidget::item:hover {{ background: {t['hover']}; }}
 QListWidget::item:selected {{ background: {t['accent']}; color: {t['accent_text']}; }}
+QFrame#SeasonPanel {{
+    background: {t['surface']}; border: 2px solid {t['border']}; border-radius: 14px;
+}}
+QLabel#SeasonHeading {{
+    color: {t['muted']}; border-bottom: 2px solid {t['border']}; padding: 2px 6px 10px 6px;
+}}
+QListWidget#SeasonList {{ background: transparent; }}
+QListWidget#SeasonList::item {{
+    background: transparent; border: 2px solid transparent; border-radius: 10px;
+    margin: 4px 1px; padding: 7px 12px;
+}}
+QListWidget#SeasonList::item:hover {{ background: {t['hover']}; border-color: {t['border']}; }}
+QListWidget#SeasonList::item:selected {{
+    background: {t['surface2']}; color: {t['text']}; border: 2px solid {t['muted']};
+}}
 
 QScrollArea {{ background: transparent; border: none; }}
 QScrollBar:vertical {{ background: {t['surface']}; width: 22px; margin: 0; border-radius: 11px; }}

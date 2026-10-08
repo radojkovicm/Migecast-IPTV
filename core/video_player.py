@@ -1,13 +1,15 @@
 """libVLC based video player.
 
-libVLC is loaded lazily on the first ``play()`` call: importing ``vlc`` and
-scanning the VLC plugins costs 0.5–3 s, which used to delay startup.
+libVLC is loaded in a background warm-up after the window appears. Importing
+``vlc`` and scanning plugins can be slow on the first Windows run, but it must
+never block the GUI or wait for the user's first ``play()`` click.
 In the installed program libVLC and its plugins are bundled in
 ``_internal\\vlc``; users never need a separate VLC installation.
 """
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 
 from PyQt6.QtCore import QObject, QTimer, pyqtSignal
@@ -17,10 +19,12 @@ from utils import paths
 logger = logging.getLogger(__name__)
 
 _vlc_module = None
+_dll_directory_handle = None
 
 
 def _configure_bundled_vlc():
     """Point python-vlc to the bundled libVLC (frozen build) if present."""
+    global _dll_directory_handle
     candidates = [paths.bundle_dir() / "vlc", paths.app_dir() / "vlc"]
     for folder in candidates:
         lib = folder / ("libvlc.dll" if sys.platform == "win32" else "libvlc.so")
@@ -32,7 +36,11 @@ def _configure_bundled_vlc():
                 os.environ["VLC_PLUGIN_PATH"] = str(plugins)
             if hasattr(os, "add_dll_directory"):
                 try:
-                    os.add_dll_directory(str(folder))
+                    # Keep the handle alive for the process lifetime.  Closing or
+                    # garbage-collecting it can make libVLC's dependent DLLs vanish
+                    # from the Windows loader search path after the first import.
+                    if _dll_directory_handle is None:
+                        _dll_directory_handle = os.add_dll_directory(str(folder))
                 except OSError:
                     pass
             return folder
@@ -59,6 +67,7 @@ class VideoPlayer(QObject):
 
     state_changed = pyqtSignal(str)  # playing, paused, stopped, ended, error, buffering, reconnecting
     error_occurred = pyqtSignal()
+    initialization_finished = pyqtSignal(bool)
     _vlc_event = pyqtSignal(str)  # marshals VLC callbacks (VLC thread) to the GUI thread
 
     def __init__(self, reconnect_attempts: int = 3):
@@ -71,6 +80,8 @@ class VideoPlayer(QObject):
         self.reconnect_attempt = 0
         self.current_url = None
         self._volume = 70
+        self._initializing = False
+        self._init_lock = threading.Lock()
         self._vlc_event.connect(self._on_vlc_event)
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.setSingleShot(True)
@@ -80,52 +91,93 @@ class VideoPlayer(QObject):
 
     @property
     def available(self) -> bool:
-        return self.ensure_initialized()
+        return self._media_player is not None
+
+    @property
+    def is_initialized(self) -> bool:
+        """Return readiness without ever doing slow work on the GUI thread."""
+        return self._media_player is not None
 
     @property
     def media_player(self):
-        """The libVLC media player (created on first access)."""
-        if self._media_player is None and not self._is_destroyed:
-            self.ensure_initialized()
+        """Return the player without triggering a blocking VLC initialisation."""
         return self._media_player
 
-    def ensure_initialized(self) -> bool:
-        if self._media_player is not None:
+    def initialize_async(self) -> bool:
+        """Start libVLC in a daemon worker so the Qt event loop stays responsive.
+
+        Returns ``True`` when VLC was already ready.  Completion of a new or
+        existing attempt is reported through ``initialization_finished``.
+        """
+        if self.is_initialized:
             return True
-        if self._is_destroyed:
+        if self._is_destroyed or self._initializing:
             return False
-        vlc = load_vlc()
-        if not vlc:
-            return False
+        self._initializing = True
+        threading.Thread(
+            target=self._initialize_worker,
+            name="VLC-initializer",
+            daemon=True,
+        ).start()
+        return False
+
+    def _initialize_worker(self):
+        ok = False
         try:
-            from utils import startup_profiler
-            args = ["--network-caching=1500", "--live-caching=1500", "--no-video-title-show",
-                    "--no-stats", "--no-osd", "--quiet", "--no-snapshot-preview", "--no-lua",
-                    "--http-reconnect"]
-            self.instance = vlc.Instance(" ".join(args))
-            if self.instance is None:
-                raise RuntimeError("vlc.Instance returned None")
-            self._media_player = self.instance.media_player_new()
-            self._media_player.audio_set_volume(self._volume)
-            self.event_manager = self._media_player.event_manager()
-            events = vlc.EventType
-            self.event_manager.event_attach(events.MediaPlayerEncounteredError, lambda e: self._vlc_event.emit("error"))
-            self.event_manager.event_attach(events.MediaPlayerPlaying, lambda e: self._vlc_event.emit("playing"))
-            self.event_manager.event_attach(events.MediaPlayerPaused, lambda e: self._vlc_event.emit("paused"))
-            self.event_manager.event_attach(events.MediaPlayerStopped, lambda e: self._vlc_event.emit("stopped"))
-            self.event_manager.event_attach(events.MediaPlayerEndReached, lambda e: self._vlc_event.emit("ended"))
-            startup_profiler.mark("vlc_initialized")
-            return True
-        except Exception as exc:
-            logger.error("Failed to initialise VLC: %s", exc)
-            self.instance = None
-            self._media_player = None
-            return False
+            ok = self.ensure_initialized()
+        finally:
+            self._initializing = False
+            self.initialization_finished.emit(ok)
+
+    def ensure_initialized(self) -> bool:
+        with self._init_lock:
+            if self._media_player is not None:
+                return True
+            if self._is_destroyed:
+                return False
+            vlc = load_vlc()
+            if not vlc:
+                return False
+            try:
+                from utils import startup_profiler
+                args = ["--network-caching=1500", "--live-caching=1500", "--no-video-title-show",
+                        "--no-stats", "--no-osd", "--quiet", "--no-snapshot-preview", "--no-lua",
+                        "--http-reconnect"]
+                instance = vlc.Instance(" ".join(args))
+                if instance is None:
+                    raise RuntimeError("vlc.Instance returned None")
+                media_player = instance.media_player_new()
+                if self._is_destroyed:
+                    media_player.release()
+                    instance.release()
+                    return False
+                media_player.audio_set_volume(self._volume)
+                event_manager = media_player.event_manager()
+                events = vlc.EventType
+                event_manager.event_attach(events.MediaPlayerEncounteredError, lambda e: self._vlc_event.emit("error"))
+                event_manager.event_attach(events.MediaPlayerPlaying, lambda e: self._vlc_event.emit("playing"))
+                event_manager.event_attach(events.MediaPlayerPaused, lambda e: self._vlc_event.emit("paused"))
+                event_manager.event_attach(events.MediaPlayerStopped, lambda e: self._vlc_event.emit("stopped"))
+                event_manager.event_attach(events.MediaPlayerEndReached, lambda e: self._vlc_event.emit("ended"))
+                self.instance = instance
+                self._media_player = media_player
+                self.event_manager = event_manager
+                startup_profiler.mark("vlc_initialized")
+                logger.info("VLC initialised in background")
+                return True
+            except Exception as exc:
+                logger.error("Failed to initialise VLC: %s", exc)
+                self.instance = None
+                self._media_player = None
+                return False
 
     # -- playback ---------------------------------------------------------------
 
     def play(self, url: str, _reconnect: bool = False) -> bool:
-        if not self.ensure_initialized():
+        # The UI starts initialisation asynchronously.  Never fall back to a
+        # blocking first-time initialisation here because play() runs on Qt's
+        # GUI thread.
+        if not self.is_initialized:
             self.state_changed.emit("error")
             return False
         self.current_url = url

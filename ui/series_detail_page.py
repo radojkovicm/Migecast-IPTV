@@ -1,26 +1,23 @@
-"""Series screen: poster and info on top, seasons on the left, episodes right.
-
-Episodes are painted by a delegate (no widget per episode), so series with
-hundreds of episodes scroll smoothly. Each row shows ``S01E03``, the title,
-progress and large *Pusti / Nastavi / Od početka / Odgledano* buttons.
-"""
+"""Senior-friendly series screen with paged, full-width episode rows."""
 import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import (QAbstractItemView, QHBoxLayout, QLineEdit, QListView, QListWidget,
-                             QListWidgetItem, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QHBoxLayout, QListView,
+                             QListWidget, QListWidgetItem, QStyle, QStyledItemDelegate,
+                             QVBoxLayout, QWidget)
 
 from core.db_access import Database
 from core.m3u import episode_code, natural_key, parse_episode_info, sort_episodes
 from models.series_item import SeriesItem
 from ui.detail_common import DetailHeader, format_time
-from ui.widgets import button, label, repolish
+from ui.widgets import button, label
 from utils import themes
 
-ROW_H = 104
+ROW_H = 90
+RANGE_SIZE = 5
 NO_SEASON = "__none__"
 
 
@@ -89,9 +86,10 @@ class EpisodeModel(QAbstractListModel):
 
 
 class EpisodeDelegate(QStyledItemDelegate):
-    action = pyqtSignal(str, object)  # 'resume' | 'play' | 'watched', EpisodeRow
+    """Paint one large row; double-clicking the row or clicking its button plays it."""
 
-    BTN_H = 56
+    action = pyqtSignal(str, object)  # 'resume' | 'play' | 'watched', EpisodeRow
+    BTN_H = 54
 
     def sizeHint(self, option, index):
         return QSize(option.rect.width(), ROW_H)
@@ -99,11 +97,7 @@ class EpisodeDelegate(QStyledItemDelegate):
     def _buttons(self, rect, row: EpisodeRow):
         specs = []
         if row.resumable:
-            specs.append(("resume", f"▶ Nastavi {format_time(row.position)}", 230, True))
             specs.append(("play", "⏮ Od početka", 180, False))
-        else:
-            specs.append(("play", "▶ Pusti", 150, True))
-        specs.append(("watched", "↺ Nije odgledano" if row.is_watched else "✓ Odgledano", 200, False))
         result = []
         x = rect.right() - 14
         y = rect.y() + (rect.height() - self.BTN_H) / 2
@@ -122,16 +116,16 @@ class EpisodeDelegate(QStyledItemDelegate):
         hovered = bool(option.state & QStyle.StateFlag.State_MouseOver)
         selected = bool(option.state & QStyle.StateFlag.State_Selected)
         painter.setPen(QPen(QColor(t["accent"] if (selected or row.is_last) else t["border"]),
-                            3 if (selected or row.is_last) else 1))
+                            4 if selected else (3 if row.is_last else 1)))
         painter.setBrush(QColor(t["hover"] if hovered else t["surface"]))
         painter.drawRoundedRect(rect, 14, 14)
 
-        badge = QRectF(rect.x() + 16, rect.y() + (rect.height() - 44) / 2, 118, 44)
+        badge = QRectF(rect.x() + 16, rect.y() + (rect.height() - 46) / 2, 126, 46)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(t["accent"] if not row.is_watched else t["surface2"]))
         painter.drawRoundedRect(badge, 10, 10)
         badge_font = QFont(painter.font())
-        badge_font.setPointSize(15)
+        badge_font.setPointSize(16)
         badge_font.setBold(True)
         painter.setFont(badge_font)
         painter.setPen(QColor(t["accent_text"] if not row.is_watched else t["text"]))
@@ -145,15 +139,20 @@ class EpisodeDelegate(QStyledItemDelegate):
         title_font.setBold(True)
         painter.setFont(title_font)
         painter.setPen(QColor(t["text"]))
-        title_rect = QRectF(text_left, rect.y() + 14, text_right - text_left, 34)
+        title_rect = QRectF(text_left, rect.y() + 8, text_right - text_left, 31)
+        number = row.episode.episode or "—"
+        generic_title = re.fullmatch(r"(?i)(episode|epizoda)\s*0*" + re.escape(str(number)),
+                                     row.title.strip())
+        title = f"Epizoda {number}" if generic_title else f"Epizoda {number}  ·  {row.title}"
         painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                         painter.fontMetrics().elidedText(row.title, Qt.TextElideMode.ElideRight, int(title_rect.width())))
+                         painter.fontMetrics().elidedText(title, Qt.TextElideMode.ElideRight,
+                                                          int(title_rect.width())))
 
         status_font = QFont(painter.font())
         status_font.setPointSize(12)
         status_font.setBold(False)
         painter.setFont(status_font)
-        status_rect = QRectF(text_left, title_rect.bottom() + 6, text_right - text_left, 26)
+        status_rect = QRectF(text_left, title_rect.bottom() + 2, text_right - text_left, 26)
         if row.is_watched:
             painter.setPen(QColor(t["accent"]))
             status = "✓ Odgledano"
@@ -166,20 +165,22 @@ class EpisodeDelegate(QStyledItemDelegate):
         if row.is_last:
             status = "● Poslednje gledano  ·  " + status
         painter.drawText(status_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                         painter.fontMetrics().elidedText(status, Qt.TextElideMode.ElideRight, int(status_rect.width())))
+                         painter.fontMetrics().elidedText(status, Qt.TextElideMode.ElideRight,
+                                                          int(status_rect.width())))
         if row.resumable and row.duration:
-            bar = QRectF(text_left, status_rect.bottom() + 6, min(320, text_right - text_left), 8)
+            bar = QRectF(text_left, status_rect.bottom() + 1, min(320, text_right - text_left), 6)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(t["surface2"]))
-            painter.drawRoundedRect(bar, 4, 4)
+            painter.drawRoundedRect(bar, 3, 3)
             painter.setBrush(QColor(t["accent"]))
-            painter.drawRoundedRect(QRectF(bar.x(), bar.y(), bar.width() * min(1, row.position / row.duration), 8), 4, 4)
+            painter.drawRoundedRect(
+                QRectF(bar.x(), bar.y(), bar.width() * min(1, row.position / row.duration), 6), 3, 3)
 
         button_font = QFont(painter.font())
         button_font.setPointSize(13)
         button_font.setBold(True)
         painter.setFont(button_font)
-        for key, text, brect, primary in buttons:
+        for _key, text, brect, primary in buttons:
             painter.setPen(QPen(QColor(t["accent"] if primary else t["border"]), 2))
             painter.setBrush(QColor(t["accent"] if primary else t["secondary"]))
             painter.drawRoundedRect(brect, 12, 12)
@@ -191,7 +192,8 @@ class EpisodeDelegate(QStyledItemDelegate):
         if event.type() in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonPress,
                             QEvent.Type.MouseButtonDblClick):
             row = index.data(Qt.ItemDataRole.UserRole)
-            for key, _text, brect, _primary in self._buttons(QRectF(option.rect).adjusted(4, 4, -4, -4), row):
+            for key, _text, brect, _primary in self._buttons(
+                    QRectF(option.rect).adjusted(4, 4, -4, -4), row):
                 if brect.contains(event.position()):
                     if event.type() == QEvent.Type.MouseButtonRelease:
                         self.action.emit(key, row)
@@ -213,7 +215,7 @@ class SeriesDetailPage(QWidget):
         self.ordered: List[SeriesItem] = []
         self.seasons: Dict[str, List[SeriesItem]] = {}
         self.current_season: Optional[str] = None
-        self.descending = False
+        self.range_index = 0
         self._continue_target = None
 
         layout = QVBoxLayout(self)
@@ -233,28 +235,52 @@ class SeriesDetailPage(QWidget):
 
         body = QHBoxLayout()
         body.setSpacing(20)
-        left = QVBoxLayout()
-        left.addWidget(label("Sezone", "h2"))
+        self.season_panel = QFrame()
+        self.season_panel.setObjectName("SeasonPanel")
+        self.season_panel.setFixedWidth(310)
+        left = QVBoxLayout(self.season_panel)
+        left.setContentsMargins(14, 12, 14, 14)
+        left.setSpacing(10)
+        season_heading = label("SEZONE", "h2")
+        season_heading.setObjectName("SeasonHeading")
+        left.addWidget(season_heading)
         self.season_list = QListWidget()
-        self.season_list.setFixedWidth(290)
+        self.season_list.setObjectName("SeasonList")
         self.season_list.setCursor(Qt.CursorShape.PointingHandCursor)
         self.season_list.currentRowChanged.connect(self._on_season_row)
         left.addWidget(self.season_list, 1)
-        body.addLayout(left)
+        body.addWidget(self.season_panel)
 
         right = QVBoxLayout()
         bar = QHBoxLayout()
         self.episodes_title = label("Epizode", "h2")
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("🔍  Pretraga epizoda…")
-        self.search.setClearButtonEnabled(True)
-        self.search.setMaximumWidth(420)
-        self.search.textChanged.connect(lambda _: self._fill_episodes())
-        self.sort_btn = button("Redosled: 1 → 9", "secondary", self._toggle_sort, 220)
         bar.addWidget(self.episodes_title, 1)
-        bar.addWidget(self.search, 1)
-        bar.addWidget(self.sort_btn)
+        self.total_label = label("", "muted")
+        font = self.total_label.font()
+        font.setPointSize(14)
+        font.setBold(True)
+        self.total_label.setFont(font)
+        bar.addWidget(self.total_label)
         right.addLayout(bar)
+
+        self.range_bar = QHBoxLayout()
+        self.range_bar.setSpacing(10)
+        self.prev_range_btn = button("◀  Prethodnih 5", "secondary", self._previous_range, 220)
+        self.range_combo = QComboBox()
+        self.range_combo.setMinimumWidth(360)
+        self.range_combo.setMinimumHeight(60)
+        self.range_combo.setCursor(Qt.CursorShape.PointingHandCursor)
+        range_font = self.range_combo.font()
+        range_font.setPointSize(14)
+        range_font.setBold(True)
+        self.range_combo.setFont(range_font)
+        self.range_combo.currentIndexChanged.connect(self._select_range)
+        self.next_range_btn = button("Sledećih 5  ▶", "secondary", self._next_range, 220)
+        self.range_bar.addWidget(self.prev_range_btn)
+        self.range_bar.addWidget(self.range_combo)
+        self.range_bar.addWidget(self.next_range_btn)
+        self.range_bar.addStretch(1)
+        right.addLayout(self.range_bar)
 
         self.message = label("", "h2", wrap=True)
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -267,6 +293,8 @@ class SeriesDetailPage(QWidget):
         self.view = QListView()
         self.view.setUniformItemSizes(True)
         self.view.setMouseTracking(True)
+        self.view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.view.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.view.verticalScrollBar().setSingleStep(36)
         self.model = EpisodeModel(self)
@@ -283,9 +311,6 @@ class SeriesDetailPage(QWidget):
 
     def show_series(self, key: str, episodes: List[SeriesItem], loading: bool = False):
         self.series_key = key
-        self.search.blockSignals(True)
-        self.search.clear()
-        self.search.blockSignals(False)
         first = episodes[0] if episodes else None
         cover = next((e.cover for e in episodes if e.cover), None)
         info = first or SeriesItem(stream_id="", name=key, url="")
@@ -310,6 +335,9 @@ class SeriesDetailPage(QWidget):
         self.message.setVisible(loading or bool(error) or not self.ordered)
         self.retry_btn.setVisible(bool(error))
         self.view.setVisible(bool(self.ordered))
+        self.range_combo.setVisible(bool(self.ordered))
+        self.prev_range_btn.setVisible(bool(self.ordered))
+        self.next_range_btn.setVisible(bool(self.ordered))
         self.season_list.setEnabled(bool(self.ordered))
         if loading:
             self.message.setText("Učitavam epizode…")
@@ -320,7 +348,7 @@ class SeriesDetailPage(QWidget):
         self._fill_seasons()
         self.refresh()
 
-    def refresh(self):
+    def refresh(self, select_id: Optional[str] = None):
         """Re-read progress/favorite state (e.g. after playback)."""
         db = Database()
         state = db.get_series_state(self.series_key) or {}
@@ -337,12 +365,12 @@ class SeriesDetailPage(QWidget):
             if last is not None:
                 season = season_of(last)
         self._select_season(season if season in self.seasons else (next(iter(self.seasons), None)))
-        self._fill_episodes(scroll_to_last=True)
+        self._fill_episodes(select_id=select_id or self._last_id)
 
     def focus_episode(self, episode: SeriesItem):
         self._last_id = episode.stream_id
         self._select_season(season_of(episode))
-        self._fill_episodes(scroll_to_last=True)
+        self._fill_episodes(select_id=episode.stream_id)
 
     # -- seasons -----------------------------------------------------------------------------
 
@@ -383,9 +411,7 @@ class SeriesDetailPage(QWidget):
         if 0 <= row < len(self._season_keys):
             self.current_season = self._season_keys[row]
             Database().set_series_state(self.series_key, season=self.current_season)
-            self.search.blockSignals(True)
-            self.search.clear()
-            self.search.blockSignals(False)
+            self.range_index = 0
             self._fill_episodes()
 
     # -- episodes ----------------------------------------------------------------------------
@@ -397,36 +423,68 @@ class SeriesDetailPage(QWidget):
                           completed=completed, watched=episode.stream_id in self._watched,
                           is_last=episode.stream_id == self._last_id)
 
-    def _fill_episodes(self, scroll_to_last: bool = False):
-        text = self.search.text().strip().lower()
-        if text:
-            words = text.split()
-            source = [e for e in self.ordered
-                      if all(w in f"{episode_code(e.season, e.episode)} {e.name} {e.episode_title or ''}".lower()
-                             for w in words)]
-            self.episodes_title.setText(f"Rezultati pretrage ({len(source)})")
-        else:
-            source = self.seasons.get(self.current_season, [])
-            if self.current_season == NO_SEASON or self.current_season is None:
-                self.episodes_title.setText(f"Epizode ({len(source)})")
-            else:
-                self.episodes_title.setText(f"Sezona {self.current_season} – {len(source)} epizoda")
-        rows = [self._row(e) for e in source]
-        if self.descending:
-            rows.reverse()
-        self.model.set_rows(rows)
-        if scroll_to_last and self._last_id:
-            for index, row in enumerate(rows):
-                if row.episode.stream_id == self._last_id:
-                    model_index = self.model.index(index)
-                    self.view.setCurrentIndex(model_index)
-                    self.view.scrollTo(model_index, QAbstractItemView.ScrollHint.PositionAtCenter)
-                    break
+    def _episode_number(self, episode: SeriesItem, fallback: int) -> str:
+        return str(episode.episode or fallback)
 
-    def _toggle_sort(self):
-        self.descending = not self.descending
-        self.sort_btn.setText("Redosled: 9 → 1" if self.descending else "Redosled: 1 → 9")
+    def _rebuild_range_selector(self, source: List[SeriesItem]):
+        self.range_combo.blockSignals(True)
+        self.range_combo.clear()
+        for start in range(0, len(source), RANGE_SIZE):
+            end = min(start + RANGE_SIZE, len(source))
+            first = self._episode_number(source[start], start + 1)
+            last = self._episode_number(source[end - 1], end)
+            self.range_combo.addItem(f"Epizode {first}–{last} od ukupno {len(source)}")
+        if self.range_combo.count():
+            self.range_combo.setCurrentIndex(self.range_index)
+        self.range_combo.blockSignals(False)
+        self.prev_range_btn.setEnabled(self.range_index > 0)
+        self.next_range_btn.setEnabled(self.range_index + 1 < self.range_combo.count())
+
+    def _fill_episodes(self, select_id: Optional[str] = None):
+        source = self.seasons.get(self.current_season, [])
+        count = len(source)
+        if self.current_season == NO_SEASON or self.current_season is None:
+            self.episodes_title.setText(f"Epizode — ukupno {count}")
+        else:
+            self.episodes_title.setText(f"Sezona {self.current_season} — ukupno {count} epizoda")
+        last_number = self._episode_number(source[-1], count) if source else "—"
+        self.total_label.setText(f"POSLEDNJA EPIZODA: {last_number}")
+
+        if select_id:
+            selected_position = next((i for i, e in enumerate(source) if e.stream_id == select_id), None)
+            if selected_position is not None:
+                self.range_index = selected_position // RANGE_SIZE
+        range_count = max(1, (count + RANGE_SIZE - 1) // RANGE_SIZE)
+        self.range_index = min(max(0, self.range_index), range_count - 1)
+        self._rebuild_range_selector(source)
+
+        start = self.range_index * RANGE_SIZE
+        rows = [self._row(e) for e in source[start:start + RANGE_SIZE]]
+        self.model.set_rows(rows)
+        selected_index = 0
+        if select_id:
+            selected_index = next((i for i, row in enumerate(rows)
+                                   if row.episode.stream_id == select_id), 0)
+        if rows:
+            model_index = self.model.index(selected_index)
+            self.view.setCurrentIndex(model_index)
+            self.view.scrollToTop()
+
+    def _select_range(self, index: int):
+        if index < 0:
+            return
+        if index == self.range_index and self.model.rows:
+            return
+        self.range_index = index
         self._fill_episodes()
+
+    def _previous_range(self):
+        if self.range_index > 0:
+            self.range_combo.setCurrentIndex(self.range_index - 1)
+
+    def _next_range(self):
+        if self.range_index + 1 < self.range_combo.count():
+            self.range_combo.setCurrentIndex(self.range_index + 1)
 
     # -- actions ------------------------------------------------------------------------------
 
@@ -437,15 +495,17 @@ class SeriesDetailPage(QWidget):
             row = self._row(last)
             if row.resumable:
                 target, resume = last, row.position
-                text = f"▶  Nastavi {row.code} od {format_time(row.position)}"
+                text = (f"▶  Nastavi: sezona {last.season or '—'}, "
+                        f"epizoda {last.episode or '—'} od {format_time(row.position)}")
             else:
                 index = self.ordered.index(last)
                 if index + 1 < len(self.ordered):
                     target = self.ordered[index + 1]
-                    text = f"▶  Pusti sledeću: {episode_code(target.season, target.episode) or 'epizodu'}"
+                    text = (f"▶  Pusti sledeću: sezona {target.season or '—'}, "
+                            f"epizoda {target.episode or '—'}")
         if target is None and self.ordered:
             target = self.ordered[0]
-            text = f"▶  Pusti {episode_code(target.season, target.episode) or 'prvu epizodu'}"
+            text = "▶  Pusti prvu epizodu"
         self._continue_target = (target, resume) if target is not None else None
         self.continue_btn.setVisible(target is not None)
         self.continue_btn.setText(text)
@@ -455,27 +515,18 @@ class SeriesDetailPage(QWidget):
             episode, resume = self._continue_target
             self.play_requested.emit(episode, self.ordered, resume)
 
+    def _on_double_click(self, index: QModelIndex):
+        """A double-click anywhere on an episode row starts playback."""
+        row = index.data(Qt.ItemDataRole.UserRole) if index.isValid() else None
+        if row:
+            resume = row.position if row.resumable else 0
+            self.play_requested.emit(row.episode, self.ordered, resume)
+
     def _on_action(self, key: str, row: EpisodeRow):
         if key == "resume":
             self.play_requested.emit(row.episode, self.ordered, row.position)
         elif key == "play":
             self.play_requested.emit(row.episode, self.ordered, 0)
-        elif key == "watched":
-            db = Database()
-            if row.is_watched:
-                db.mark_series_unwatched(row.episode.stream_id)
-                db.delete_watch_progress(row.episode.stream_id)
-            else:
-                db.mark_series_watched(row.episode.stream_id, row.episode.name, self.series_key,
-                                       row.episode.season or "", row.episode.episode or "")
-                db.delete_watch_progress(row.episode.stream_id)
-            self.refresh()
-            self.changed.emit()
-
-    def _on_double_click(self, index):
-        row = index.data(Qt.ItemDataRole.UserRole)
-        if row:
-            self.play_requested.emit(row.episode, self.ordered, row.position if row.resumable else 0)
 
     def _toggle_favorite(self):
         Database().toggle_series_favorite(self.series_key)

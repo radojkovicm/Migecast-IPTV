@@ -81,6 +81,16 @@ def test_startup_with_saved_list(qapp, demo_db, window):
     assert window.series_page.model.rowCount() > 0
 
 
+def test_start_begins_vlc_warmup_immediately(qapp, demo_db, window, monkeypatch):
+    calls = []
+    monkeypatch.setenv("QT_QPA_PLATFORM", "windows")
+    monkeypatch.setattr(window.video_player, "initialize_async", lambda: calls.append(True) or False)
+
+    window.start()
+    assert calls == [True]
+    wait_loaded(qapp, window)
+
+
 def test_series_screen_and_autoplay_flow(qapp, demo_db, window):
     from ui.main_window import SERIES_DETAIL
     window.start()
@@ -91,20 +101,22 @@ def test_series_screen_and_autoplay_flow(qapp, demo_db, window):
     page = window.series_detail
     assert window.stack.currentIndex() == SERIES_DETAIL
     assert len(page._season_keys) == 5
-    assert page.model.rowCount() == 24
+    assert page.model.rowCount() == 5
     assert page.model.rows[0].code == "S01E01"
-    assert page.continue_btn.text().endswith("S01E01")
+    assert page.continue_btn.text() == "▶  Pusti prvu epizodu"
+    assert page.total_label.text() == "POSLEDNJA EPIZODA: 24"
+    assert page.range_combo.currentText() == "Epizode 1–5 od ukupno 24"
+    assert page.range_combo.count() == 5
+    assert page.season_panel.objectName() == "SeasonPanel"
+    assert page.season_list.objectName() == "SeasonList"
 
-    # Switch season, then search across seasons and sort.
+    # Switching a season keeps the complete, ascending episode map visible.
     page.season_list.setCurrentRow(2)
     assert page.model.rows[0].code == "S03E01"
     assert Database().get_series_state("Duga Demo Serija")["season"] == "3"
-    page.search.setText("S02E1")
-    assert {r.code for r in page.model.rows} >= {"S02E10", "S02E19"}
-    page.search.clear()
-    page._toggle_sort()
-    assert page.model.rows[0].code == "S03E24"
-    page._toggle_sort()
+    page.range_combo.setCurrentIndex(1)
+    assert page.model.rows[0].code == "S03E06"
+    page.range_combo.setCurrentIndex(0)
 
     # Play S03E05 -> state remembered, autoplay goes to S03E06, end of season -> S04E01
     target = next(e for e in episodes if e.season == "3" and e.episode == "5")
@@ -124,7 +136,7 @@ def test_series_screen_and_autoplay_flow(qapp, demo_db, window):
     current = window.series_queue[window.series_index]
     Database().update_watch_progress(current.stream_id, "series", current.name, 754, 2600)
     window.on_playback_exited()
-    assert "S04E01" in page.continue_btn.text() and "12:34" in page.continue_btn.text()
+    assert "sezona 4, epizoda 1" in page.continue_btn.text() and "12:34" in page.continue_btn.text()
     assert page.current_season == "4"
     row = next(r for r in page.model.rows if r.episode.stream_id == current.stream_id)
     assert row.resumable and row.is_last
@@ -133,9 +145,65 @@ def test_series_screen_and_autoplay_flow(qapp, demo_db, window):
     window.on_playback_finished("series")
     Database().update_watch_progress(current.stream_id, "series", current.name, 2600, 2600)
     page.refresh()
-    assert "sledeću: S04E02" in page.continue_btn.text()
-    page._on_action("watched", next(r for r in page.model.rows if r.episode.stream_id == current.stream_id))
-    assert current.stream_id not in Database().get_watched_series_ids()
+    assert "sledeću: sezona 4, epizoda 2" in page.continue_btn.text()
+    assert current.stream_id in Database().get_watched_series_ids()
+
+
+def test_series_with_80_episodes_has_explicit_ranges(qapp, demo_db, window):
+    from PyQt6.QtCore import QRectF, Qt
+    from PyQt6.QtTest import QTest
+    from models.series_item import SeriesItem
+    from ui.series_detail_page import SeriesDetailPage
+
+    episodes = [
+        SeriesItem(str(i), f"Velika Serija S01E{i:02d}", f"http://demo.invalid/{i}.mp4",
+                   season="1", episode=str(i), series_name="Velika Serija",
+                   episode_title=f"Epizoda {i}")
+        for i in range(1, 81)
+    ]
+    page = SeriesDetailPage()
+    page.show_series("Velika Serija", episodes)
+
+    assert page.episodes_title.text() == "Sezona 1 — ukupno 80 epizoda"
+    assert page.total_label.text() == "POSLEDNJA EPIZODA: 80"
+    assert page.range_combo.count() == 16
+    assert page.range_combo.itemText(0) == "Epizode 1–5 od ukupno 80"
+    assert page.range_combo.itemText(15) == "Epizode 76–80 od ukupno 80"
+    page.range_combo.setCurrentIndex(15)
+    assert [r.episode.episode for r in page.model.rows] == [str(i) for i in range(76, 81)]
+    actions = [key for key, _text, _rect, _primary
+               in page.delegate._buttons(QRectF(0, 0, 1200, 90), page.model.rows[0])]
+    assert actions == []  # playback is a double-click; watched state is automatic
+
+    played = []
+    page.play_requested.connect(lambda episode, _ordered, resume: played.append((episode.episode, resume)))
+    page.resize(1600, 900)
+    page.show()
+    qapp.processEvents()
+    target_index = page.model.index(0)
+    target_rect = page.view.visualRect(target_index)
+    assert target_rect.isValid() and not target_rect.isEmpty()
+    # Windows delivers the first click before the double-click event.
+    QTest.mouseClick(page.view.viewport(), Qt.MouseButton.LeftButton, pos=target_rect.center())
+    QTest.mouseDClick(page.view.viewport(), Qt.MouseButton.LeftButton, pos=target_rect.center())
+    qapp.processEvents()
+    assert played == [("76", 0)]
+
+
+def test_first_playback_shows_and_clears_wait_overlay(qapp, demo_db, window, monkeypatch):
+    window.start()
+    wait_loaded(qapp, window)
+    calls = []
+    monkeypatch.setattr(window.video_player, "initialize_async", lambda: calls.append(True) or False)
+
+    window._prepare_playback()
+    assert calls == [True]
+    assert window.overlay.isVisible()
+    assert window.overlay.text.text() == "Pokrećem video plejer…"
+    assert "Program i dalje radi" in window.overlay.detail.text()
+
+    window._on_player_initialized(True)
+    assert not window.overlay.isVisible()
 
 
 def test_movie_detail_resume_and_favorite(qapp, demo_db, window):
