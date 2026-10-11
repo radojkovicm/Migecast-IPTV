@@ -39,7 +39,7 @@ Microsoft C/C++ runtime DLLs are part of the installer.
 - M3U/M3U8 from a file or URL, paste from clipboard, automatic detection of full Xtream `get.php` links, Xtream server/user/password form.
 - Live TV list with favorites (★), next/previous channel, auto-reconnect when a stream drops.
 - Movies and series as poster grids with search, categories, *Favoriti* (Favorites) and *Nastavi gledanje* (Continue watching).
-- Series screen: seasons in a clearly separated panel, five large episode rows per page with `S01E03`, title and watched status; double-click an episode to play it; remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
+- Series screen: seasons in a clearly separated panel, five large episode rows per page with `S01E03`, title, progress and one-click *Pusti / Nastavi / Od početka / Odgledano* (Play / Resume / From start / Watched) buttons (a double-click on the row also plays); remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
 - Categories: pin the ones you use (📌) so they stay at the top of the list, and hide the rest. *Podešavanja → Kategorije* has *Sakrij sve* (Hide all) and a check box per category, separately for TV, movies and series.
 - Watch progress with resume for movies and episodes.
 - Dark, light and high-contrast themes.
@@ -114,7 +114,7 @@ pwsh installer\test_installer.ps1 -Installer installer\Output\MigeCast-Setup-$ve
 ### Checksum
 
 ```powershell
-Get-FileHash installer\Output\MigeCast-Setup-2.0.1.exe -Algorithm SHA256
+Get-FileHash installer\Output\MigeCast-Setup-2.0.2.exe -Algorithm SHA256
 ```
 
 CI writes `MigeCast-Setup-<version>.exe.sha256` next to the installer and

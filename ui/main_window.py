@@ -58,10 +58,6 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1280, 720)
         self._build()
         self.video_player.initialization_finished.connect(self._on_player_initialized)
-        self.playback_wait_timer = QTimer(self)
-        self.playback_wait_timer.setSingleShot(True)
-        self.playback_wait_timer.setInterval(30000)
-        self.playback_wait_timer.timeout.connect(self._on_playback_wait_timeout)
         self._shortcuts()
         startup_profiler.mark("main_window_built")
 
@@ -157,6 +153,7 @@ class MainWindow(QMainWindow):
         self.player_widget.next_requested.connect(self.live_tv_widget.select_next_channel)
         self.player_widget.playback_exited.connect(self.on_playback_exited)
         self.player_widget.playback_finished.connect(self.on_playback_finished)
+        self.player_widget.start_timed_out.connect(self._on_playback_wait_timeout)
         self.player_widget.auto_play_next_episode.connect(self.play_next_episode)
         self.player_widget.video_frame.double_clicked.connect(self.player_widget.toggle_fullscreen)
         tv_layout.addWidget(self.player_widget, 1)
@@ -525,23 +522,21 @@ class MainWindow(QMainWindow):
         self._playback_wait_overlay = True
         self.overlay.start("Pokrećem video plejer…", cancellable=False)
         self.overlay.set_detail("Prvo pokretanje može potrajati. Program i dalje radi.")
-        self.playback_wait_timer.start()
         self.video_player.initialize_async()
 
     def _on_player_initialized(self, ok: bool):
         if not self._playback_wait_overlay:
             return
         self._playback_wait_overlay = False
-        self.playback_wait_timer.stop()
         self.overlay.finish()
         if not ok:
             self.toast.show_message("Video plejer nije mogao da se pokrene.")
 
     def _on_playback_wait_timeout(self):
-        if not self._playback_wait_overlay or self.video_player.is_initialized:
-            return
-        self._playback_wait_overlay = False
-        self.overlay.finish()
+        """The player gave up waiting for libVLC (one timer, in PlayerWidget)."""
+        if self._playback_wait_overlay:
+            self._playback_wait_overlay = False
+            self.overlay.finish()
         self.toast.show_message("Video plejer se nije pokrenuo. Ponovo pokrenite program.", 7000)
 
     def play_channel(self, channel):

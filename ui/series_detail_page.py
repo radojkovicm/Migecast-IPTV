@@ -1,11 +1,12 @@
 """Senior-friendly series screen with paged, full-width episode rows."""
 import re
+import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRectF, QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen
-from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QFrame, QHBoxLayout, QListView,
+from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QFrame, QHBoxLayout, QListView,
                              QListWidget, QListWidgetItem, QStyle, QStyledItemDelegate,
                              QVBoxLayout, QWidget)
 
@@ -86,18 +87,37 @@ class EpisodeModel(QAbstractListModel):
 
 
 class EpisodeDelegate(QStyledItemDelegate):
-    """Paint one large row; double-clicking the row or clicking its button plays it."""
+    """Paint one large row with one-click buttons (*Pusti* / *Nastavi*, *Od početka*,
+    *Odgledano*); double-clicking the row also plays it."""
 
     action = pyqtSignal(str, object)  # 'resume' | 'play' | 'watched', EpisodeRow
     BTN_H = 54
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._last_action = (None, None, 0.0)
+
     def sizeHint(self, option, index):
         return QSize(option.rect.width(), ROW_H)
+
+    def _emit_once(self, key: str, row: "EpisodeRow"):
+        """A double-click on a button counts as one click (two releases arrive)."""
+        now = time.monotonic()
+        last_key, last_id, last_time = self._last_action
+        interval = QApplication.doubleClickInterval() / 1000.0
+        if key == last_key and row.episode.stream_id == last_id and now - last_time < interval:
+            return
+        self._last_action = (key, row.episode.stream_id, now)
+        self.action.emit(key, row)
 
     def _buttons(self, rect, row: EpisodeRow):
         specs = []
         if row.resumable:
+            specs.append(("resume", f"▶ Nastavi {format_time(row.position)}", 220, True))
             specs.append(("play", "⏮ Od početka", 180, False))
+        else:
+            specs.append(("play", "▶ Pusti", 150, True))
+        specs.append(("watched", "↺ Nije odgledano" if row.is_watched else "✓ Odgledano", 200, False))
         result = []
         x = rect.right() - 14
         y = rect.y() + (rect.height() - self.BTN_H) / 2
@@ -196,7 +216,7 @@ class EpisodeDelegate(QStyledItemDelegate):
                     QRectF(option.rect).adjusted(4, 4, -4, -4), row):
                 if brect.contains(event.position()):
                     if event.type() == QEvent.Type.MouseButtonRelease:
-                        self.action.emit(key, row)
+                        self._emit_once(key, row)
                     return True
         return super().editorEvent(event, model, option, index)
 
@@ -527,6 +547,16 @@ class SeriesDetailPage(QWidget):
             self.play_requested.emit(row.episode, self.ordered, row.position)
         elif key == "play":
             self.play_requested.emit(row.episode, self.ordered, 0)
+        elif key == "watched":
+            db = Database()
+            if row.is_watched:
+                db.mark_series_unwatched(row.episode.stream_id)
+            else:
+                db.mark_series_watched(row.episode.stream_id, row.episode.name, self.series_key,
+                                       row.episode.season or "", row.episode.episode or "")
+            db.delete_watch_progress(row.episode.stream_id)
+            self.refresh(select_id=row.episode.stream_id)
+            self.changed.emit()
 
     def _toggle_favorite(self):
         Database().toggle_series_favorite(self.series_key)

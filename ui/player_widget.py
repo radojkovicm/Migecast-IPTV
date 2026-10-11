@@ -380,6 +380,7 @@ class PlayerWidget(QWidget):
     next_requested = pyqtSignal()
     playback_exited = pyqtSignal()  # Emitted when user exits playback
     auto_play_next_episode = pyqtSignal()  # Emitted when auto-play should trigger
+    start_timed_out = pyqtSignal()  # libVLC did not start within vlc_init_timer
     
     def __init__(self, video_player: VideoPlayer, parent=None):
         super().__init__(parent)
@@ -1017,6 +1018,7 @@ class PlayerWidget(QWidget):
             self.play_btn.setEnabled(True)
             self.status_label.setText("Video plejer se nije pokrenuo. Ponovo pokrenite program.")
             logger.error("VLC initialisation did not finish within 30 seconds")
+            self.start_timed_out.emit()
     
     def toggle_play_pause(self):
         if not self.video_player.is_initialized:

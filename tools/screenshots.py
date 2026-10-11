@@ -157,9 +157,7 @@ def main(out: Path, theme: str = "dark"):
     tv_combo.setCurrentIndex(tv_combo.findData("Sport"))
     tv_combo.toggle_pin()
     window.open_section(TV)
-    window.live_tv_widget.category.showPopup()
     shot("09-tv-pinned")
-    window.live_tv_widget.category.hidePopup()
     window.go(SETTINGS)
     cards = window.settings_page.category_settings
     cards.ensurePolished()
