@@ -3,10 +3,11 @@ import logging
 from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtWidgets import QComboBox, QHBoxLayout, QLineEdit, QStackedLayout, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLineEdit, QStackedLayout, QVBoxLayout, QWidget
 
 from core.db_access import Database
 from core.m3u import group_series, legacy_series_name, series_name_for
+from ui.category_combo import CategoryCombo, pin_button
 from ui.poster_grid import PosterGridView, PosterItem, PosterModel
 from ui.widgets import button, label
 from utils.image_cache import ImageLoader
@@ -15,11 +16,14 @@ logger = logging.getLogger(__name__)
 
 CONTINUE = "▶  Nastavi gledanje"
 FAVORITES = "⭐  Favoriti"
+CONTINUE_KEY, FAVORITES_KEY, ALL_KEY = "__continue__", "__favorites__", "__all__"
 
 
 class CatalogPage(QWidget):
     item_selected = pyqtSignal(object)
+    categories_changed = pyqtSignal(str)  # section, after pinning from this page
 
+    section = ""
     all_label = "Sve"
     search_hint = "Pretraga…"
     empty_favorites = "Još nemate favorite."
@@ -30,7 +34,6 @@ class CatalogPage(QWidget):
         self.setObjectName("Page")
         self.db = None
         self._entries = []  # (key, lower_title, category, PosterItem)
-        self._categories: List[str] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 18, 24, 12)
@@ -43,14 +46,17 @@ class CatalogPage(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.setMinimumWidth(360)
         self.search.textChanged.connect(lambda _: self._debounce.start(250))
-        self.category = QComboBox()
+        self.category = CategoryCombo(self.section, [(CONTINUE, CONTINUE_KEY), (FAVORITES, FAVORITES_KEY),
+                                                     (self.all_label, ALL_KEY)])
         self.category.setMinimumWidth(380)
-        self.category.setMaxVisibleItems(14)
         self.category.currentIndexChanged.connect(lambda _: self.apply_filter())
+        self.category.prefs_changed.connect(self.categories_changed.emit)
+        self.pin_btn = pin_button(self.category)
         self.count = label("", "muted")
         bar.addWidget(label("🔍"))
         bar.addWidget(self.search, 2)
         bar.addWidget(self.category, 2)
+        bar.addWidget(self.pin_btn)
         bar.addWidget(self.count)
         layout.addLayout(bar)
 
@@ -91,30 +97,31 @@ class CatalogPage(QWidget):
 
     def _set_entries(self, entries, categories):
         self._entries = entries
-        self._categories = sorted(categories, key=str.lower)
-        self.category.blockSignals(True)
-        previous = self.category.currentText()
-        self.category.clear()
-        self.category.addItems([CONTINUE, FAVORITES, self.all_label] + self._categories)
-        if previous and self.category.findText(previous) >= 0:
-            self.category.setCurrentText(previous)
-        else:
-            self.category.setCurrentText(FAVORITES if self._favorite_keys() else self.all_label)
-        self.category.blockSignals(False)
+        self.category.set_categories(categories,
+                                     default_key=FAVORITES_KEY if self._favorite_keys() else ALL_KEY)
+        self.apply_filter()
+
+    @property
+    def all_categories(self) -> List[str]:
+        return self.category.categories
+
+    def reload_categories(self):
+        """Pinned/hidden categories were changed in the settings."""
+        self.category.reload(default_key=ALL_KEY)
         self.apply_filter()
 
     def apply_filter(self):
-        choice = self.category.currentText()
+        choice = self.category.current_key()
         text = self.search.text().strip().lower()
-        if choice == CONTINUE:
+        if choice == CONTINUE_KEY:
             order = {key: index for index, key in enumerate(self._continue_keys())}
             selected = [e for e in self._entries if e[0] in order]
             selected.sort(key=lambda e: order[e[0]])
-        elif choice == FAVORITES:
+        elif choice == FAVORITES_KEY:
             favorites = self._favorite_keys()
             selected = [e for e in self._entries if e[0] in favorites]
-        elif choice == self.all_label or not choice:
-            selected = self._entries
+        elif choice == ALL_KEY or not choice:
+            selected = [e for e in self._entries if self.category.visible(e[2])]
         else:
             selected = [e for e in self._entries if e[2] == choice]
         if text:
@@ -129,9 +136,9 @@ class CatalogPage(QWidget):
         if items:
             self.stack.setCurrentIndex(0)
         else:
-            if choice == FAVORITES and not text:
+            if choice == FAVORITES_KEY and not text:
                 self.empty.setText(self.empty_favorites)
-            elif choice == CONTINUE and not text:
+            elif choice == CONTINUE_KEY and not text:
                 self.empty.setText("Ovde će se pojaviti sadržaj koji ste počeli da gledate.")
             else:
                 self.empty.setText("Nema rezultata. Probajte drugu reč ili kategoriju.")
@@ -147,6 +154,7 @@ class CatalogPage(QWidget):
 
 
 class VODPage(CatalogPage):
+    section = "vod"
     all_label = "🎬  Svi filmovi"
     search_hint = "Pretražite filmove…"
     empty_favorites = "Nemate omiljene filmove.\nOtvorite film i kliknite „⭐ Favorit“."
@@ -182,6 +190,7 @@ class VODPage(CatalogPage):
 
 
 class SeriesPage(CatalogPage):
+    section = "series"
     all_label = "📺  Sve serije"
     search_hint = "Pretražite serije…"
     empty_favorites = "Nemate omiljene serije.\nOtvorite seriju i kliknite „⭐ Favorit“."

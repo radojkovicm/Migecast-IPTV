@@ -211,6 +211,21 @@ class SeriesState(Base):
     updated_at = Column(DateTime, default=datetime.now)
 
 
+class CategoryPref(Base):
+    """Pinned / hidden category per section ("tv", "vod", "series").
+
+    A new table only, so ``create_all`` adds it to existing databases without
+    a schema migration. Categories are matched by name, which keeps the
+    choice when the provider list is refreshed."""
+    __tablename__ = "category_prefs"
+    id = Column(Integer, primary_key=True)
+    section = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    pinned_at = Column(DateTime)  # NULL = not pinned; pinned categories are ordered by this
+    hidden = Column(Boolean, default=False, nullable=False)
+    __table_args__ = (Index("ix_category_prefs_section_name", "section", "name", unique=True),)
+
+
 # ---------------------------------------------------------------------------
 # Migrations
 # ---------------------------------------------------------------------------
@@ -566,6 +581,34 @@ class Database:
             state.last_episode_id = str(episode_id)
         state.updated_at = datetime.now()
         return self._commit("saving series state")
+
+    # -- category preferences -------------------------------------------------------
+
+    def get_category_prefs(self, section: str):
+        """Return ``(pinned names in pin order, hidden names)`` for a section."""
+        rows = self.session.query(CategoryPref).filter_by(section=section).all()
+        pinned = sorted((r for r in rows if r.pinned_at is not None), key=lambda r: (r.pinned_at, r.id))
+        return [r.name for r in pinned], {r.name for r in rows if r.hidden}
+
+    def _category_pref(self, section: str, name: str) -> "CategoryPref":
+        pref = self.session.query(CategoryPref).filter_by(section=section, name=name).first()
+        if pref is None:
+            pref = CategoryPref(section=section, name=name, hidden=False)
+            self.session.add(pref)
+        return pref
+
+    def set_category_pinned(self, section: str, name: str, pinned: bool) -> bool:
+        pref = self._category_pref(section, name)
+        if pinned and pref.pinned_at is None:
+            pref.pinned_at = datetime.now()
+        elif not pinned:
+            pref.pinned_at = None
+        return self._commit("saving pinned category")
+
+    def set_categories_hidden(self, section: str, names: Iterable[str], hidden: bool) -> bool:
+        for name in set(names):
+            self._category_pref(section, name).hidden = bool(hidden)
+        return self._commit("saving hidden categories")
 
     # -- playlists ----------------------------------------------------------------
 

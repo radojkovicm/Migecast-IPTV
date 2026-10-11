@@ -40,6 +40,7 @@ Microsoft C/C++ runtime DLLs are part of the installer.
 - Live TV list with favorites (★), next/previous channel, auto-reconnect when a stream drops.
 - Movies and series as poster grids with search, categories, *Favoriti* (Favorites) and *Nastavi gledanje* (Continue watching).
 - Series screen: seasons in a clearly separated panel, five large episode rows per page with `S01E03`, title and watched status; double-click an episode to play it; remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
+- Categories: pin the ones you use (📌) so they stay at the top of the list, and hide the rest. *Podešavanja → Kategorije* has *Sakrij sve* (Hide all) and a check box per category, separately for TV, movies and series.
 - Watch progress with resume for movies and episodes.
 - Dark, light and high-contrast themes.
 
@@ -165,7 +166,7 @@ also in the `installer-test-reports` artifact.
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python -m pytest -q     # 75 tests
+QT_QPA_PLATFORM=offscreen python -m pytest -q     # 78 tests
 python main.py --windowed                         # run from source (needs VLC installed or vendor/vlc)
 python tools/screenshots.py shots dark            # render all pages with synthetic data
 python tools/check_repo_secrets.py                # fail on committed private data
@@ -179,9 +180,9 @@ under the reserved `.invalid` TLD) and an isolated data folder
 |---|---|
 | M3U/M3U8 parser, classification TV/movie/series, `S01E03` parsing, stable IDs, Xtream URL detection | `tests/test_m3u.py` |
 | Loading from URL, timeouts, network errors, cancellation, Xtream API | `tests/test_network.py` |
-| Encryption, credentials at rest, 1.x database migration, watch progress, series state, legacy import, log redaction | `tests/test_storage.py` |
+| Encryption, credentials at rest, 1.x database migration, watch progress, series state, pinned/hidden categories, legacy import, log redaction | `tests/test_storage.py` |
 | Image cache: worker threads, de-duplication, failures, disk LRU, GUI responsiveness | `tests/test_image_cache.py` |
-| Startup, first run, navigation, series with many seasons, autoplay, resume, settings, cancel | `tests/test_ui.py` |
+| Startup, first run, navigation, category pinning and hiding, series with many seasons, autoplay, resume, settings, cancel | `tests/test_ui.py` |
 | Install, upgrade, uninstall, reinstall, bundled VLC, startup time | `installer/test_installer.ps1` (Windows CI) |
 
 ## Privacy and security

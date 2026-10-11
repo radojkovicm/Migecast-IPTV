@@ -4,11 +4,12 @@ from typing import List
 
 from PyQt6.QtCore import QAbstractListModel, QEvent, QModelIndex, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter
-from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QLineEdit, QListView, QStyle,
+from PyQt6.QtWidgets import (QAbstractItemView, QHBoxLayout, QLineEdit, QListView, QStyle,
                              QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from core.db_access import Database
 from models.channel import Channel
+from ui.category_combo import CategoryCombo, pin_button
 from ui.widgets import label
 from utils import themes
 from utils.image_cache import ImageLoader
@@ -19,6 +20,7 @@ ROW_H = 76
 STAR_W = 64
 FAVORITES = "⭐  Omiljeni kanali"
 ALL = "📺  Svi kanali"
+FAVORITES_KEY, ALL_KEY = "__favorites__", "__all__"
 
 
 class ChannelModel(QAbstractListModel):
@@ -132,6 +134,7 @@ class ChannelDelegate(QStyledItemDelegate):
 
 class LiveTVWidget(QWidget):
     channel_selected = pyqtSignal(Channel)
+    categories_changed = pyqtSignal(str)  # section, after pinning from this page
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -140,9 +143,10 @@ class LiveTVWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 8, 8)
         layout.setSpacing(10)
-        self.category = QComboBox()
-        self.category.setMaxVisibleItems(14)
+        self.category = CategoryCombo("tv", [(FAVORITES, FAVORITES_KEY), (ALL, ALL_KEY)])
         self.category.currentIndexChanged.connect(lambda _: self.filter_channels())
+        self.category.prefs_changed.connect(self.categories_changed.emit)
+        self.pin_btn = pin_button(self.category, 150)
         self.search = QLineEdit()
         self.search.setPlaceholderText("🔍  Pretražite kanale…")
         self.search.setClearButtonEnabled(True)
@@ -161,7 +165,11 @@ class LiveTVWidget(QWidget):
         self.view.clicked.connect(self._on_clicked)
         self.empty = label("", "muted", wrap=True)
         self.empty.hide()
-        layout.addWidget(self.category)
+        category_row = QHBoxLayout()
+        category_row.setSpacing(8)
+        category_row.addWidget(self.category, 1)
+        category_row.addWidget(self.pin_btn)
+        layout.addLayout(category_row)
         layout.addWidget(self.search)
         layout.addWidget(self.empty)
         layout.addWidget(self.view, 1)
@@ -172,22 +180,27 @@ class LiveTVWidget(QWidget):
     def load_channels(self, channels: List[Channel]):
         self.db = Database()
         self.all_channels = channels
-        categories = sorted({c.category for c in channels if c.category}, key=str.lower)
         favorites = self.db.get_favorite_channel_ids()
-        self.category.blockSignals(True)
-        self.category.clear()
-        self.category.addItems([FAVORITES, ALL] + categories)
-        self.category.setCurrentText(FAVORITES if favorites else ALL)
-        self.category.blockSignals(False)
+        self.category.set_categories({c.category for c in channels},
+                                     default_key=FAVORITES_KEY if favorites else ALL_KEY)
+        self.filter_channels()
+
+    @property
+    def all_categories(self) -> List[str]:
+        return self.category.categories
+
+    def reload_categories(self):
+        """Pinned/hidden categories were changed in the settings."""
+        self.category.reload(default_key=ALL_KEY)
         self.filter_channels()
 
     def filter_channels(self):
         favorites = self.db.get_favorite_channel_ids() if self.db else set()
-        choice = self.category.currentText()
-        if choice == FAVORITES:
+        choice = self.category.current_key()
+        if choice == FAVORITES_KEY:
             channels = [c for c in self.all_channels if c.channel_id in favorites]
-        elif choice == ALL or not choice:
-            channels = self.all_channels
+        elif choice == ALL_KEY or not choice:
+            channels = [c for c in self.all_channels if self.category.visible(c.category)]
         else:
             channels = [c for c in self.all_channels if c.category == choice]
         words = self.search.text().strip().lower().split()
@@ -197,7 +210,7 @@ class LiveTVWidget(QWidget):
         self.model.set_channels(channels, favorites)
         if not channels:
             self.empty.setText("Nema omiljenih kanala. Kliknite ☆ pored kanala da ga dodate."
-                               if choice == FAVORITES and not words else "Nema kanala za ovu pretragu.")
+                               if choice == FAVORITES_KEY and not words else "Nema kanala za ovu pretragu.")
             self.empty.show()
         else:
             self.empty.hide()
@@ -207,7 +220,7 @@ class LiveTVWidget(QWidget):
             return
         self.db.toggle_channel_favorite(channel.channel_id, channel.name)
         self.model.favorites = self.db.get_favorite_channel_ids()
-        if self.category.currentText() == FAVORITES:
+        if self.category.current_key() == FAVORITES_KEY:
             self.filter_channels()
         else:
             self.model.update_all()

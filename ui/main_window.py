@@ -185,6 +185,7 @@ class MainWindow(QMainWindow):
         self.settings_page.theme_changed.connect(self.apply_theme)
         self.settings_page.import_requested.connect(self.import_old_database)
         self.settings_page.player_settings_changed.connect(self._apply_player_settings)
+        self.settings_page.categories_changed.connect(self._on_categories_changed)
         for page in (self.vod_page, self.series_page, self.vod_detail, self.series_detail, self.settings_page):
             self.stack.addWidget(page)
 
@@ -351,7 +352,18 @@ class MainWindow(QMainWindow):
         self.series_btn.setText(f"📺\nSerije\n({series_count})")
         self.home_status.setText("")
         self.settings_page.show_welcome(False)
+        self.settings_page.set_categories({"tv": self.live_tv_widget.all_categories,
+                                           "vod": self.vod_page.all_categories,
+                                           "series": self.series_page.all_categories})
         self._update_settings_info()
+
+    def _category_page(self, section: str):
+        return {"tv": self.live_tv_widget, "vod": self.vod_page, "series": self.series_page}.get(section)
+
+    def _on_categories_changed(self, section: str):
+        page = self._category_page(section)
+        if page is not None:
+            page.reload_categories()
 
     def _update_settings_info(self):
         counts = None

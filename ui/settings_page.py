@@ -33,6 +33,7 @@ class SettingsPage(QWidget):
     theme_changed = pyqtSignal(str)
     import_requested = pyqtSignal(str)
     player_settings_changed = pyqtSignal()
+    categories_changed = pyqtSignal(str)  # section: "tv", "vod" or "series"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -140,6 +141,14 @@ class SettingsPage(QWidget):
         layout.addWidget(frame)
         self.mode_group.button(0).setChecked(True)
 
+        # -- categories --------------------------------------------------------------
+        from ui.category_settings import CategorySettings
+        frame, box = card("🗂  Kategorije")
+        self.category_settings = CategorySettings()
+        self.category_settings.changed.connect(self.categories_changed.emit)
+        box.addWidget(self.category_settings)
+        layout.addWidget(frame)
+
         # -- appearance --------------------------------------------------------------
         frame, box = card("🎨  Izgled")
         theme_row = QHBoxLayout()
@@ -197,6 +206,13 @@ class SettingsPage(QWidget):
         if refreshed:
             text += f"<br>Poslednje osveženo: {refreshed.strftime('%d.%m.%Y %H:%M')}"
         self.current_info.setText(text)
+
+    def set_categories(self, categories: dict):
+        self.category_settings.set_categories(categories)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.category_settings.reload()
 
     def show_welcome(self, visible: bool):
         self.welcome.setText("👋  Dobrodošli! Da biste gledali TV, filmove i serije, dodajte IPTV listu "

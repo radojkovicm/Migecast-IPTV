@@ -146,6 +146,23 @@ def test_series_state_and_watched():
     assert db.get_watched_series_ids() == set()
 
 
+def test_category_prefs_pin_order_and_hide():
+    db = Database()
+    assert db.get_category_prefs("tv") == ([], set())
+    db.set_category_pinned("tv", "Sport", True)
+    db.set_category_pinned("tv", "Informativni", True)
+    db.set_category_pinned("tv", "Sport", True)  # pinning again keeps the original position
+    db.set_categories_hidden("tv", ["Muzika", "Dečiji"], True)
+    db.set_category_pinned("vod", "Akcija", True)
+    pinned, hidden = db.get_category_prefs("tv")
+    assert pinned == ["Sport", "Informativni"]
+    assert hidden == {"Muzika", "Dečiji"}
+    db.set_category_pinned("tv", "Sport", False)
+    db.set_categories_hidden("tv", ["Muzika"], False)
+    assert db.get_category_prefs("tv") == (["Informativni"], {"Dečiji"})
+    assert db.get_category_prefs("vod") == (["Akcija"], set())
+
+
 def test_series_favorite_rename():
     db = Database()
     db.add_series_favorite("Old Name")

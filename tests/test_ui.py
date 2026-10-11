@@ -206,6 +206,74 @@ def test_first_playback_shows_and_clears_wait_overlay(qapp, demo_db, window, mon
     assert not window.overlay.isVisible()
 
 
+def _combo_texts(combo):
+    return [combo.itemText(i) for i in range(combo.count()) if combo.itemData(i) is not None]
+
+
+def test_pin_category_from_tv_page_moves_it_to_top(qapp, demo_db, window):
+    from ui.category_combo import PIN_MARK
+    from ui.live_tv_widget import ALL_KEY
+    window.start()
+    wait_loaded(qapp, window)
+    tv = window.live_tv_widget
+    combo = tv.category
+    assert not tv.pin_btn.isEnabled()  # "Omiljeni kanali" is not a category
+    combo.setCurrentIndex(combo.findData("Sport"))
+    assert tv.pin_btn.isEnabled() and "Zakači" in tv.pin_btn.text()
+    tv.pin_btn.click()
+    texts = _combo_texts(combo)
+    assert texts[2] == PIN_MARK + "Sport"
+    assert texts.count("Sport") == 0 and combo.current_key() == "Sport"
+    assert "Otkači" in tv.pin_btn.text()
+    assert all(c.category == "Sport" for c in tv.model.channels)
+    # the pin survives a restart (stored in the database)
+    window.live_tv_widget.load_channels(tv.all_channels)
+    assert _combo_texts(combo)[2] == PIN_MARK + "Sport"
+    tv.pin_btn.click()
+    assert PIN_MARK + "Sport" not in _combo_texts(combo)
+    combo.setCurrentIndex(combo.findData(ALL_KEY))
+    assert tv.model.rowCount() == 50
+
+
+def test_settings_hide_all_then_keep_selected_categories(qapp, demo_db, window):
+    from ui.catalog_page import ALL_KEY, FAVORITES_KEY
+    from ui.main_window import SETTINGS
+    window.start()
+    wait_loaded(qapp, window)
+    window.go(SETTINGS)
+    pump(qapp, 0.1)
+    cats = window.settings_page.category_settings
+    assert len(cats.rows) == 6  # TV categories of the demo list
+    cats.section_group.button(1).click()  # movies
+    assert cats.section == "vod"
+    movie_categories = window.vod_page.all_categories
+    assert sorted(cats.rows) == sorted(movie_categories)
+    cats.hide_all_btn.click()
+    assert "Prikazano 0 od" in cats.summary.text()
+    keep = movie_categories[0]
+    cats.rows[keep].check.setChecked(True)
+    cats.rows[keep].pin.setChecked(True)
+    assert f"Prikazano 1 od {len(movie_categories)}" in cats.summary.text()
+
+    page = window.vod_page
+    keys = [page.category.itemData(i) for i in range(page.category.count())
+            if page.category.itemData(i) is not None]
+    assert keys[3:] == [keep]  # only the kept (and pinned) category after the fixed entries
+    page.category.setCurrentIndex(page.category.findData(ALL_KEY))
+    expected = sum(1 for e in page._entries if e[2] == keep or not e[2])
+    assert page.model.rowCount() == expected
+    # favorites still show everything, also from hidden categories
+    Database().add_vod_favorite(page._entries[-1][0], "x")
+    page.category.setCurrentIndex(page.category.findData(FAVORITES_KEY))
+    assert page.model.rowCount() >= 1
+    # the TV page is untouched
+    assert window.live_tv_widget.category.hidden == set()
+
+    cats.show_all_btn.click()
+    page.category.setCurrentIndex(page.category.findData(ALL_KEY))
+    assert page.model.rowCount() == 200
+
+
 def test_movie_detail_resume_and_favorite(qapp, demo_db, window):
     from ui.main_window import VOD_DETAIL
     window.start()

@@ -109,6 +109,7 @@ def main(out: Path, theme: str = "dark"):
 
     themes.set_current(theme)
     app.setStyleSheet(themes.generate_stylesheet(theme))
+    from PyQt6.QtWidgets import QScrollArea
     from ui.main_window import HOME, SERIES, SERIES_DETAIL, SETTINGS, TV, VOD, VOD_DETAIL, MainWindow
     window = MainWindow()
     window.resize(1600, 960)
@@ -151,6 +152,19 @@ def main(out: Path, theme: str = "dark"):
     shot("07-series-no-season")
     window.go(SETTINGS)
     shot("08-settings")
+    # Categories: pin one TV category, then show the settings card
+    tv_combo = window.live_tv_widget.category
+    tv_combo.setCurrentIndex(tv_combo.findData("Sport"))
+    tv_combo.toggle_pin()
+    window.open_section(TV)
+    window.live_tv_widget.category.showPopup()
+    shot("09-tv-pinned")
+    window.live_tv_widget.category.hidePopup()
+    window.go(SETTINGS)
+    cards = window.settings_page.category_settings
+    cards.ensurePolished()
+    window.settings_page.findChild(QScrollArea).ensureWidgetVisible(cards, 0, 0)
+    shot("10-settings-categories")
     window.close()
 
 
