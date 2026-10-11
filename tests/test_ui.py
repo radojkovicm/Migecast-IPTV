@@ -173,7 +173,7 @@ def test_series_with_80_episodes_has_explicit_ranges(qapp, demo_db, window):
     assert [r.episode.episode for r in page.model.rows] == [str(i) for i in range(76, 81)]
     actions = [key for key, _text, _rect, _primary
                in page.delegate._buttons(QRectF(0, 0, 1200, 90), page.model.rows[0])]
-    assert actions == ["play", "watched"]  # one-click play; double-click works too
+    assert actions == ["play"]  # one-click play; double-click works too; no manual "watched"
 
 
     played = []
@@ -190,19 +190,13 @@ def test_series_with_80_episodes_has_explicit_ranges(qapp, demo_db, window):
     qapp.processEvents()
     assert played == [("76", 0)]
 
-    # "✓ Odgledano" marks the episode, and "↺ Nije odgledano" undoes it
     first = page.model.rows[0]
-    page._on_action("watched", first)
-    assert first.episode.stream_id in Database().get_watched_series_ids()
-    row = next(r for r in page.model.rows if r.episode.stream_id == first.episode.stream_id)
-    assert row.is_watched and page.range_combo.currentIndex() == 15
-    page._on_action("watched", row)
-    assert first.episode.stream_id not in Database().get_watched_series_ids()
     Database().update_watch_progress(first.episode.stream_id, "series", first.episode.name, 600, 2400)
     page.refresh(select_id=first.episode.stream_id)
     row = next(r for r in page.model.rows if r.episode.stream_id == first.episode.stream_id)
     actions = [key for key, *_rest in page.delegate._buttons(QRectF(0, 0, 1200, 90), row)]
-    assert actions == ["resume", "play", "watched"]
+    assert actions == ["resume", "play"]
+    assert page.range_combo.currentIndex() == 15
 
     # Double-clicking the "Nastavi" button starts playback only once
     played.clear()

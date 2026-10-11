@@ -19,6 +19,11 @@ from utils import paths
 logger = logging.getLogger(__name__)
 
 _vlc_module = None
+
+# A stream that does not show a picture within this time is given up, so the
+# user is not left waiting (a busy/full IPTV account usually never answers).
+# Reconnect attempts after an error count towards the same deadline.
+CONNECT_TIMEOUT_MS = 15000
 _dll_directory_handle = None
 
 
@@ -65,7 +70,7 @@ def load_vlc():
 class VideoPlayer(QObject):
     """VLC player with lazy initialisation and bounded auto-reconnect."""
 
-    state_changed = pyqtSignal(str)  # playing, paused, stopped, ended, error, buffering, reconnecting
+    state_changed = pyqtSignal(str)  # playing, paused, stopped, ended, error, reconnecting, timeout
     error_occurred = pyqtSignal()
     initialization_finished = pyqtSignal(bool)
     _vlc_event = pyqtSignal(str)  # marshals VLC callbacks (VLC thread) to the GUI thread
@@ -86,6 +91,10 @@ class VideoPlayer(QObject):
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.setSingleShot(True)
         self.reconnect_timer.timeout.connect(self.attempt_reconnect)
+        self.connect_timer = QTimer(self)
+        self.connect_timer.setSingleShot(True)
+        self.connect_timer.setInterval(CONNECT_TIMEOUT_MS)
+        self.connect_timer.timeout.connect(self._on_connect_timeout)
 
     # -- lazy init ------------------------------------------------------------
 
@@ -183,6 +192,9 @@ class VideoPlayer(QObject):
         self.current_url = url
         if not _reconnect:
             self.reconnect_attempt = 0
+            self.connect_timer.stop()
+        if not self.connect_timer.isActive():
+            self.connect_timer.start()
         try:
             media = self.instance.media_new(url)
             media.add_option(":http-user-agent=VLC/3.0.21 LibVLC/3.0.21")
@@ -207,6 +219,7 @@ class VideoPlayer(QObject):
     def stop(self):
         self.current_url = None
         self.reconnect_timer.stop()
+        self.connect_timer.stop()
         if self._media_player:
             try:
                 self._media_player.stop()
@@ -225,14 +238,25 @@ class VideoPlayer(QObject):
             return
         if state == "playing":
             self.reconnect_attempt = 0
+            self.connect_timer.stop()
         elif state == "error":
             if self.current_url and self.reconnect_attempt < self.max_reconnect_attempts:
                 self.state_changed.emit("reconnecting")
-                self.reconnect_timer.start(2000 * (self.reconnect_attempt + 1))
+                self.reconnect_timer.start(1000 * (self.reconnect_attempt + 1))
                 self.error_occurred.emit()
                 return
+            self.connect_timer.stop()
             logger.warning("Playback failed after %d reconnect attempts", self.reconnect_attempt)
         self.state_changed.emit(state)
+
+    def _on_connect_timeout(self):
+        """No picture within CONNECT_TIMEOUT_MS: stop trying and tell the user."""
+        if not self.current_url or self._is_destroyed:
+            return
+        logger.warning("No picture after %d s (%d reconnect attempts), giving up",
+                       CONNECT_TIMEOUT_MS // 1000, self.reconnect_attempt)
+        self.stop()
+        self.state_changed.emit("timeout")
 
     def attempt_reconnect(self):
         if not self.current_url:

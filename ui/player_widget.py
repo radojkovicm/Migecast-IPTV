@@ -398,7 +398,10 @@ class PlayerWidget(QWidget):
         self.fullscreen_when_ready = False
         self.vlc_init_timer = QTimer(self)
         self.vlc_init_timer.setSingleShot(True)
-        self.vlc_init_timer.setInterval(30000)
+        # One-time libVLC start (normally finished during the startup warm-up).
+        # A cold first start on a slow PC with antivirus scanning can take
+        # several seconds, so this is longer than the stream timeout.
+        self.vlc_init_timer.setInterval(20000)
         self.vlc_init_timer.timeout.connect(self._on_vlc_init_timeout)
         self.progress_save_timer = QTimer()
         self.progress_save_timer.timeout.connect(self._save_watch_progress)
@@ -1017,7 +1020,7 @@ class PlayerWidget(QWidget):
             self.fullscreen_when_ready = False
             self.play_btn.setEnabled(True)
             self.status_label.setText("Video plejer se nije pokrenuo. Ponovo pokrenite program.")
-            logger.error("VLC initialisation did not finish within 30 seconds")
+            logger.error("VLC initialisation did not finish within 20 seconds")
             self.start_timed_out.emit()
     
     def toggle_play_pause(self):
@@ -1282,10 +1285,11 @@ class PlayerWidget(QWidget):
         """Handle VLC state changes (already marshalled to the GUI thread)."""
         logger.info(f"Video state changed: {state}")
         messages = {"playing": "Reprodukcija", "paused": "Pauzirano", "reconnecting": "Ponovno povezivanje…",
-                    "error": "Greška: kanal ili video trenutno nije dostupan", "ended": "Kraj"}
+                    "error": "Greška: kanal ili video trenutno nije dostupan", "ended": "Kraj",
+                    "timeout": "Ne učitava se. Lista je možda zauzeta – probajte ponovo ili izaberite drugi kanal."}
         if state in messages:
             self.status_label.setText(messages[state])
-            if self.is_fullscreen and self._title_ok() and state in ("reconnecting", "error"):
+            if self.is_fullscreen and self._title_ok() and state in ("reconnecting", "error", "timeout"):
                 self.title_overlay.setText(messages[state])
                 self.title_overlay.adjustSize()
                 self.title_overlay.show()

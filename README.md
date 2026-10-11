@@ -37,11 +37,11 @@ Microsoft C/C++ runtime DLLs are part of the installer.
 ## Features
 
 - M3U/M3U8 from a file or URL, paste from clipboard, automatic detection of full Xtream `get.php` links, Xtream server/user/password form.
-- Live TV list with favorites (★), next/previous channel, auto-reconnect when a stream drops.
+- Live TV list with favorites (★), next/previous channel, auto-reconnect when a stream drops. If a channel shows no picture within 15 seconds (for example when the IPTV account is busy), MigeCast stops trying and says so.
 - Movies and series as poster grids with search, categories, *Favoriti* (Favorites) and *Nastavi gledanje* (Continue watching).
-- Series screen: seasons in a clearly separated panel, five large episode rows per page with `S01E03`, title, progress and one-click *Pusti / Nastavi / Od početka / Odgledano* (Play / Resume / From start / Watched) buttons (a double-click on the row also plays); remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
+- Series screen: seasons in a clearly separated panel, five large episode rows per page with `S01E03`, title, progress and one-click *Pusti / Nastavi / Od početka* (Play / Resume / From start) buttons (a double-click on the row also plays); an episode is marked as watched automatically when it is played to the end; remembers the last season and episode; automatically plays the next episode (also across seasons); returns to the same series, season and episode after playback.
 - Categories: pin the ones you use (📌) so they stay at the top of the list, and hide the rest. *Podešavanja → Kategorije* has *Sakrij sve* (Hide all) and a check box per category, separately for TV, movies and series.
-- Watch progress with resume for movies and episodes.
+- Watch progress with resume for movies and episodes; movies and episodes are marked as watched automatically at the end.
 - Dark, light and high-contrast themes.
 
 ## Where user data is stored
@@ -114,7 +114,7 @@ pwsh installer\test_installer.ps1 -Installer installer\Output\MigeCast-Setup-$ve
 ### Checksum
 
 ```powershell
-Get-FileHash installer\Output\MigeCast-Setup-2.0.2.exe -Algorithm SHA256
+Get-FileHash installer\Output\MigeCast-Setup-2.0.3.exe -Algorithm SHA256
 ```
 
 CI writes `MigeCast-Setup-<version>.exe.sha256` next to the installer and
@@ -166,7 +166,7 @@ also in the `installer-test-reports` artifact.
 
 ```bash
 pip install -r requirements-dev.txt
-QT_QPA_PLATFORM=offscreen python -m pytest -q     # 78 tests
+QT_QPA_PLATFORM=offscreen python -m pytest -q     # 81 tests
 python main.py --windowed                         # run from source (needs VLC installed or vendor/vlc)
 python tools/screenshots.py shots dark            # render all pages with synthetic data
 python tools/check_repo_secrets.py                # fail on committed private data

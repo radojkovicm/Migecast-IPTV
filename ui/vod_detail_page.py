@@ -26,9 +26,8 @@ class VODDetailPage(QWidget):
         self.resume_btn = button("▶  Nastavi", "primary", self._resume, 260)
         self.play_btn = button("▶  Pusti", "primary", self._play_start, 220)
         self.fav_btn = button("☆  Favorit", "secondary", self._toggle_favorite, 220)
-        self.watched_btn = button("✓  Odgledano", "secondary", self._toggle_watched, 220)
         self.back_btn = button("⬅  Nazad", "secondary", self.back_requested.emit, 180)
-        for btn in (self.resume_btn, self.play_btn, self.fav_btn, self.watched_btn):
+        for btn in (self.resume_btn, self.play_btn, self.fav_btn):
             self.header.buttons.addWidget(btn)
         self.header.buttons.addStretch(1)
         self.back_btn.hide()  # the window header already has a big "Nazad" button
@@ -62,8 +61,8 @@ class VODDetailPage(QWidget):
         self.play_btn.style().polish(self.play_btn)
         favorite = db.is_vod_favorite(self.vod.stream_id)
         self.fav_btn.setText("★  Ukloni iz favorita" if favorite else "☆  Dodaj u favorite")
+        # "Watched" is set automatically when the movie is played to the end.
         watched = db.is_vod_watched(self.vod.stream_id) and not resumable
-        self.watched_btn.setText("↺  Nije odgledano" if watched else "✓  Odgledano")
         if resumable:
             self.header.status.setText(f"Gledali ste do {format_time(progress.position_seconds)}"
                                        f" od {format_time(progress.duration_seconds)}.")
@@ -79,15 +78,5 @@ class VODDetailPage(QWidget):
 
     def _toggle_favorite(self):
         Database().toggle_vod_favorite(self.vod.stream_id, self.vod.name)
-        self.refresh()
-        self.changed.emit()
-
-    def _toggle_watched(self):
-        db = Database()
-        if self.watched_btn.text().startswith("↺"):
-            db.mark_vod_unwatched(self.vod.stream_id)
-        else:
-            db.mark_vod_watched(self.vod.stream_id, self.vod.name)
-            db.delete_watch_progress(self.vod.stream_id)
         self.refresh()
         self.changed.emit()

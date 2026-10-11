@@ -87,10 +87,11 @@ class EpisodeModel(QAbstractListModel):
 
 
 class EpisodeDelegate(QStyledItemDelegate):
-    """Paint one large row with one-click buttons (*Pusti* / *Nastavi*, *Od početka*,
-    *Odgledano*); double-clicking the row also plays it."""
+    """Paint one large row with one-click buttons (*Pusti* / *Nastavi*, *Od početka*);
+    double-clicking the row also plays it. "Watched" is set automatically when an
+    episode is played to the end, never by hand."""
 
-    action = pyqtSignal(str, object)  # 'resume' | 'play' | 'watched', EpisodeRow
+    action = pyqtSignal(str, object)  # 'resume' | 'play', EpisodeRow
     BTN_H = 54
 
     def __init__(self, parent=None):
@@ -117,7 +118,6 @@ class EpisodeDelegate(QStyledItemDelegate):
             specs.append(("play", "⏮ Od početka", 180, False))
         else:
             specs.append(("play", "▶ Pusti", 150, True))
-        specs.append(("watched", "↺ Nije odgledano" if row.is_watched else "✓ Odgledano", 200, False))
         result = []
         x = rect.right() - 14
         y = rect.y() + (rect.height() - self.BTN_H) / 2
@@ -547,16 +547,6 @@ class SeriesDetailPage(QWidget):
             self.play_requested.emit(row.episode, self.ordered, row.position)
         elif key == "play":
             self.play_requested.emit(row.episode, self.ordered, 0)
-        elif key == "watched":
-            db = Database()
-            if row.is_watched:
-                db.mark_series_unwatched(row.episode.stream_id)
-            else:
-                db.mark_series_watched(row.episode.stream_id, row.episode.name, self.series_key,
-                                       row.episode.season or "", row.episode.episode or "")
-            db.delete_watch_progress(row.episode.stream_id)
-            self.refresh(select_id=row.episode.stream_id)
-            self.changed.emit()
 
     def _toggle_favorite(self):
         Database().toggle_series_favorite(self.series_key)
